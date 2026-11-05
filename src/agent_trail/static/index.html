@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Agent 足迹 · 找回工作现场</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#timeline">跳至时间线</a>
+  <header class="topbar">
+    <div class="brand" aria-label="Agent 足迹">
+      <span class="brand-mark" aria-hidden="true">AT</span>
+      <span class="brand-name">AGENT <strong>足迹</strong></span>
+    </div>
+    <div class="topbar-actions">
+      <span class="local-label"><span class="status-dot"></span>本地运行 · 元数据索引</span>
+      <span id="last-scan" class="last-scan">尚未扫描</span>
+      <button id="refresh-button" class="button button-dark" type="button">
+        <span class="refresh-symbol" aria-hidden="true">↻</span>刷新足迹
+      </button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <aside class="sidebar">
+      <section class="intro">
+        <p class="eyebrow">PERSONAL WORK MEMORY</p>
+        <h1>找回<br>工作现场。</h1>
+        <p class="intro-copy">你记得做过什么。<br>足迹帮你想起在哪里、用什么、何时完成。</p>
+      </section>
+
+      <section class="filters" aria-labelledby="filter-heading">
+        <div class="section-heading">
+          <h2 id="filter-heading">缩小范围</h2>
+          <button id="clear-filters" class="text-button" type="button">重置</button>
+        </div>
+        <div class="period-filter" role="group" aria-label="日期快捷筛选">
+          <button type="button" data-period="all" aria-pressed="false">全部</button>
+          <button type="button" data-period="today" aria-pressed="false">今天</button>
+          <button type="button" data-period="yesterday" aria-pressed="false">昨天</button>
+          <button type="button" data-period="week" aria-pressed="true">最近 7 天</button>
+        </div>
+        <label class="field">
+          <span>Agent 工具</span>
+          <select id="source-filter">
+            <option value="">全部工具</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>项目目录</span>
+          <select id="project-filter">
+            <option value="">全部项目</option>
+          </select>
+        </label>
+        <label class="field" for="text-filter">
+          <span>标题或目录</span>
+          <input id="text-filter" type="search" placeholder="输入记忆中的线索…" autocomplete="off" maxlength="1000">
+        </label>
+        <p class="filter-note">只搜索原生标题和目录，不搜索对话正文。</p>
+        <label class="toggle-row" for="segment-toggle">
+          <span><strong>折叠工作段</strong><small>同工具、同项目、相邻 ≤ 45 分钟</small></span>
+          <input id="segment-toggle" type="checkbox" role="switch">
+        </label>
+      </section>
+
+      <details class="source-panel">
+        <summary><span>来源状态</span><span id="source-summary" class="source-summary">等待扫描</span></summary>
+        <div id="source-list" class="source-list"></div>
+      </details>
+    </aside>
+
+    <section class="timeline-area" aria-labelledby="timeline-heading">
+      <header class="timeline-header">
+        <div>
+          <p class="eyebrow">ACTIVITY LOG</p>
+          <h2 id="timeline-heading">时间线</h2>
+        </div>
+        <div class="result-meta">
+          <strong id="result-count">—</strong>
+          <span>条本地会话</span>
+        </div>
+      </header>
+      <div id="error-banner" class="notice notice-error" role="alert" hidden></div>
+      <div id="loading" class="loading" role="status">
+        <span class="loading-line"></span>
+        <span class="loading-line"></span>
+        <span class="loading-line"></span>
+        <p>正在拾起工作足迹…</p>
+      </div>
+      <div id="empty" class="empty-state" hidden>
+        <span class="empty-mark" aria-hidden="true">∅</span>
+        <h3>这段时间没有足迹</h3>
+        <p>换一个日期或工具试试。记录会在后台自动更新。</p>
+      </div>
+      <div id="timeline" class="timeline" aria-live="polite"></div>
+      <footer class="privacy-note">
+        <span aria-hidden="true">●</span>
+        <p>数据不离开本机。不保存消息、命令、代码或差异正文。</p>
+      </footer>
+    </section>
+  </main>
+
+  <dialog id="session-dialog" class="session-dialog" aria-labelledby="detail-title">
+    <div class="dialog-topline">
+      <span id="detail-source" class="source-badge"></span>
+      <button id="close-dialog" class="text-button" type="button">关闭</button>
+    </div>
+    <p class="eyebrow">SESSION DETAIL</p>
+    <h2 id="detail-title">未命名会话</h2>
+    <p id="detail-workdir" class="detail-workdir"></p>
+    <dl class="detail-grid">
+      <div><dt>会话 ID</dt><dd><code id="detail-id"></code></dd></div>
+      <div><dt>首次活动</dt><dd id="detail-created"></dd></div>
+      <div><dt>最后活动</dt><dd id="detail-updated"></dd></div>
+      <div><dt>改动统计</dt><dd id="detail-stats"></dd></div>
+      <div class="detail-wide"><dt>源记录位置</dt><dd><code id="detail-locator"></code></dd></div>
+    </dl>
+    <div id="detail-warning" class="notice" hidden></div>
+    <div class="resume-area">
+      <button id="resume-button" class="button button-accent" type="button">回到原会话继续</button>
+      <p id="resume-reason"></p>
+    </div>
+  </dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

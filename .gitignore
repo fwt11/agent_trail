@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# 本地运行数据（agent-trail 自己的索引，勿提交）
+.agent-trail/
+
+# Agent 工作流状态与会话数据（本地私有，勿发布）
+.superpowers/
+.zcode/
+.claude/
+.kimi-code/
