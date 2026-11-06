@@ -195,30 +195,37 @@ function i18nResolveLocale() {
 
 let i18nLocale = i18nResolveLocale();
 
-function t(key, params) {
-  const dictionary = I18N_DICT[i18nLocale] || I18N_DICT.en;
-  let text = dictionary[key] ?? I18N_DICT.en[key] ?? key;
-  if (params) {
-    for (const [name, value] of Object.entries(params)) {
-      text = text.split(`{${name}}`).join(String(value));
+/* 注意：不要在全局作用域声明名为 t 的函数/变量——WebKit 的 JSC 会拒绝
+ * app.js 的 const t 遮蔽声明（V8 容忍），导致整个 app.js 解析失败。
+ * 翻译函数只挂在 I18N.t 上，app.js 自行声明 const t = window.I18N.t。 */
+
+window.I18N = {
+  t(key, params) {
+    const dictionary = I18N_DICT[i18nLocale] || I18N_DICT.en;
+    let text = dictionary[key] ?? I18N_DICT.en[key] ?? key;
+    if (params) {
+      for (const [name, value] of Object.entries(params)) {
+        text = text.split(`{${name}}`).join(String(value));
+      }
     }
-  }
-  return text;
-}
+    return text;
+  },
+  get locale() { return i18nLocale; },
+};
 
 function i18nApplyStatic() {
   document.documentElement.lang = i18nLocale;
-  document.title = t("app.title");
+  document.title = I18N.t("app.title");
   for (const node of document.querySelectorAll("[data-i18n]")) {
-    node.textContent = t(node.dataset.i18n);
+    node.textContent = I18N.t(node.dataset.i18n);
   }
   for (const node of document.querySelectorAll("[data-i18n-html]")) {
-    node.innerHTML = t(node.dataset.i18nHtml);
+    node.innerHTML = I18N.t(node.dataset.i18nHtml);
   }
   for (const node of document.querySelectorAll("[data-i18n-attr]")) {
     for (const pair of node.dataset.i18nAttr.split(";")) {
       const [attr, key] = pair.split(":");
-      if (attr && key) node.setAttribute(attr.trim(), t(key.trim()));
+      if (attr && key) node.setAttribute(attr.trim(), I18N.t(key.trim()));
     }
   }
   for (const button of document.querySelectorAll("#lang-switch [data-lang]")) {
@@ -236,8 +243,6 @@ function i18nWireSwitcher() {
     });
   }
 }
-
-window.I18N = { t, get locale() { return i18nLocale; } };
 
 i18nApplyStatic();
 i18nWireSwitcher();

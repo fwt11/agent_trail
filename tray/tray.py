@@ -338,6 +338,11 @@ class SingleInstance:
 
 
 def run_gtk(icon_path: Path, show: bool = False) -> int:
+    # WebKit 的 DMABUF/GBM 渲染路径在无 DRM 权限的会话里分配缓冲失败
+    # （KMS: DRM_IOCTL_MODE_CREATE_DUMB failed），窗口渲染一片空白。
+    # 默认退到软件合成；用户可用同名环境变量显式覆盖。
+    os.environ.setdefault("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
+    os.environ.setdefault("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
     import gi
 
     gi.require_version("Gtk", "3.0")

@@ -80,7 +80,7 @@ python3 tray/tray.py --install   # 写入应用菜单入口；--uninstall 反向
 sudo apt install python3-gi gir1.2-webkit2-4.1
 ```
 
-托盘图标走原生 StatusNotifierItem/DBusMenu 协议（`tray/sni.py`，Gio 实现——本机的 libayatana 与 dbus-python 均不可用，详见源码注释）。`serve` 的所有命令行形态保持不变，无托盘环境（SSH/无桌面）不受影响。
+托盘图标走原生 StatusNotifierItem/DBusMenu 协议（`tray/sni.py`，Gio 实现——本机的 libayatana 与 dbus-python 均不可用，详见源码注释）。内嵌 WebView 默认使用软件合成（`WEBKIT_DISABLE_DMABUF_RENDERER` / `WEBKIT_DISABLE_COMPOSITING_MODE`，可在启动前用同名环境变量覆盖），避免在无 DRM 权限的会话里出现空白窗口。`serve` 的所有命令行形态保持不变，无托盘环境（SSH/无桌面）不受影响。
 
 ## 工作原理
 
