@@ -109,18 +109,32 @@ def _log(message: str) -> None:
 
 
 def load_icon_argb(icon_path: Path) -> tuple[int, int, bytes]:
-    """把 PNG 解码成 SNI 的 IconPixmap 数据 (w, h, ARGB 字节序列)。"""
-    from PIL import Image  # 系统发行版包；仅托盘路径使用
+    """把 PNG 解码成 SNI 的 IconPixmap 数据 (w, h, ARGB 字节序列)。
 
-    with Image.open(icon_path) as img:
-        rgba = img.convert("RGBA")
-        raw = rgba.tobytes()
-    argb = bytearray(len(raw))
-    argb[0::4] = raw[3::4]  # A
-    argb[1::4] = raw[0::4]  # R
-    argb[2::4] = raw[1::4]  # G
-    argb[3::4] = raw[2::4]  # B
-    return rgba.width, rgba.height, bytes(argb)
+    用 GDK 的 GdkPixbuf 加载（GTK 生态必带），避免对 Pillow 的隐式依赖。
+    """
+    from gi.repository import GdkPixbuf
+
+    pixbuf = GdkPixbuf.Pixbuf.new_from_file(str(icon_path))
+    if pixbuf.get_n_channels() != 4 or not pixbuf.get_has_alpha():
+        converted = pixbuf.add_alpha(False, 0, 0, 0)
+        if converted is not None:
+            pixbuf = converted
+    width = pixbuf.get_width()
+    height = pixbuf.get_height()
+    rowstride = pixbuf.get_rowstride()
+    raw = pixbuf.get_pixels()
+    w4 = width * 4
+    argb = bytearray(height * w4)
+    for y in range(height):
+        row = raw[y * rowstride : y * rowstride + w4]
+        seg = bytearray(w4)
+        seg[0::4] = row[3::4]  # A
+        seg[1::4] = row[0::4]  # R
+        seg[2::4] = row[1::4]  # G
+        seg[3::4] = row[2::4]  # B
+        argb[y * w4 : (y + 1) * w4] = seg
+    return width, height, bytes(argb)
 
 
 class MenuSpec:

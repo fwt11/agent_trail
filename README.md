@@ -37,8 +37,14 @@
 要求：Python ≥ 3.10，Linux（inotify 实时监控为 Linux 特性，其余平台自动退化为轮询）。**零第三方运行时依赖**，纯标准库。
 
 ```bash
+pip install agent-trail
+```
+
+或从源码安装：
+
+```bash
 git clone https://github.com/fwt11/agent_trail.git
-cd agent-trail
+cd agent_trail
 pip install .
 ```
 
@@ -48,6 +54,7 @@ pip install .
 agent-trail scan      # 扫描一次，输出各来源状态与记录数
 agent-trail list      # 以 JSON Lines 输出全部会话元数据
 agent-trail serve     # 启动本地控制台（默认自动打开浏览器）
+agent-trail tray      # 系统托盘形态（Linux，见下）
 ```
 
 `serve` 常用选项：
@@ -63,24 +70,24 @@ agent-trail serve --interval 30      # 轮询间隔（watch 健康时自动降�
 
 ## 桌面托盘（Linux）
 
-`serve` 之外还有系统托盘形态：内嵌窗口展示控制台，托盘菜单提供打开控制台、立即刷新、启动/停止服务、开机自启和退出。
+`serve` 之外还有系统托盘形态，已整合为子命令：内嵌窗口展示控制台，托盘菜单提供打开控制台、立即刷新、启动/停止服务、开机自启和退出。
 
 ```bash
-python3 tray/tray.py             # 启动托盘（自动拉起 agent-trail serve）
-python3 tray/tray.py --show      # 启动同时打开控制台窗口
-python3 tray/tray.py --install   # 写入应用菜单入口；--uninstall 反向清理
+agent-trail tray             # 启动托盘（自动拉起 agent-trail serve）
+agent-trail tray --show      # 启动同时打开控制台窗口
+agent-trail tray --install   # 写入应用菜单入口；--uninstall 反向清理
 ```
 
-托盘壳本身不依赖 agent-trail 包：它以子进程方式管理 PATH 上的 `agent-trail serve`（可用环境变量 `AGENT_TRAIL_BIN` 覆盖），异常退出自动重启。窗口直接关闭只是隐藏，退出走托盘菜单；flock 单实例锁防止重复启动。
-
-托盘壳需要带 GObject Introspection 绑定的系统 Python（零 pip 依赖；Deepin 23 等发行版已预装）：
+托盘壳本身不依赖任何第三方 pip 包，但需要 GTK 的 GI 绑定（系统 Python 通常自带）。`agent-trail tray` 在当前解释器缺 GI 绑定时会自动改用带绑定的系统 Python 重执行（例如 pip 装在 venv 里、托盘跑在系统 Python），无需任何手动操作；实在找不到时按提示安装：
 
 ```bash
 # Debian/Ubuntu/deepin 系
 sudo apt install python3-gi gir1.2-webkit2-4.1
 ```
 
-托盘图标走原生 StatusNotifierItem/DBusMenu 协议（`tray/sni.py`，Gio 实现——本机的 libayatana 与 dbus-python 均不可用，详见源码注释）。内嵌 WebView 默认使用软件合成（`WEBKIT_DISABLE_DMABUF_RENDERER` / `WEBKIT_DISABLE_COMPOSITING_MODE`，可在启动前用同名环境变量覆盖），避免在无 DRM 权限的会话里出现空白窗口。`serve` 的所有命令行形态保持不变，无托盘环境（SSH/无桌面）不受影响。
+托盘以子进程方式管理 `agent-trail serve`（可用环境变量 `AGENT_TRAIL_BIN` 覆盖可执行文件路径），服务异常退出自动重启（退避重试，连续失败后停在可手动启动的状态）。窗口直接关闭只是隐藏，退出走托盘菜单；flock 单实例锁防止重复启动。
+
+托盘图标走原生 StatusNotifierItem/DBusMenu 协议（`agent_trail/tray/sni.py`，Gio 实现——libayatana 在 Deepin 23 的托盘守护上不工作，详见源码注释）。内嵌 WebView 默认使用软件合成（`WEBKIT_DISABLE_DMABUF_RENDERER` / `WEBKIT_DISABLE_COMPOSITING_MODE`，可用同名环境变量覆盖），避免在无 DRM 权限的会话里出现空白窗口。`serve` 的所有命令行形态保持不变，无托盘环境（SSH/无桌面）不受影响。
 
 ## 工作原理
 

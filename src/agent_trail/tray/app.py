@@ -99,9 +99,9 @@ LOCK_PATH = Path.home() / ".agent-trail" / "tray.lock"
 AUTOSTART_PATH = Path.home() / ".config" / "autostart" / "agent-trail-tray.desktop"
 APP_MENU_PATH = Path.home() / ".local" / "share" / "applications" / "agent-trail-tray.desktop"
 
-SCRIPT_PATH = Path(__file__).resolve()
-ICON_PATH = SCRIPT_PATH.parent / "icon.png"
-DESKTOP_TEMPLATE = SCRIPT_PATH.parent / "agent-trail-tray.desktop.in"
+MODULE_DIR = Path(__file__).resolve().parent
+ICON_PATH = MODULE_DIR / "icon.png"
+DESKTOP_TEMPLATE = MODULE_DIR / "desktop.template"
 
 URL_RE = re.compile(r"^http://127\.0\.0\.1:(\d+)/\?key=(\S+)$")
 
@@ -287,28 +287,22 @@ class TrailCore:
 # -- 桌面入口文件 -----------------------------------------------------------
 
 
-def render_desktop_entry(python_bin: str, script: Path, icon: Path,
+def render_desktop_entry(executable: str, icon: Path,
                          template: Path = DESKTOP_TEMPLATE) -> str:
     text = template.read_text(encoding="utf-8")
-    return (
-        text.replace("@PYTHON@", python_bin)
-        .replace("@SCRIPT@", str(script))
-        .replace("@ICON@", str(icon))
-    )
+    return text.replace("@EXEC@", f"{executable} tray").replace("@ICON@", str(icon))
 
 
 def autostart_enabled(target: Path = AUTOSTART_PATH) -> bool:
     return target.exists()
 
 
-def set_autostart(enabled: bool, python_bin: str, script: Path, icon: Path,
+def set_autostart(enabled: bool, executable: str, icon: Path,
                   target: Path = AUTOSTART_PATH,
                   template: Path = DESKTOP_TEMPLATE) -> None:
     if enabled:
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(
-            render_desktop_entry(python_bin, script, icon, template), encoding="utf-8"
-        )
+        target.write_text(render_desktop_entry(executable, icon, template), encoding="utf-8")
     elif target.exists():
         target.unlink()
 
@@ -333,6 +327,15 @@ class SingleInstance:
         os.write(self._fd, f"{os.getpid()}\n".encode())
         return True
 
+    def release(self) -> None:
+        if self._fd is not None:
+            try:
+                fcntl.flock(self._fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(self._fd)
+            self._fd = None
+
 
 # -- GTK 托盘与窗口 ---------------------------------------------------------
 
@@ -353,8 +356,7 @@ def run_gtk(icon_path: Path, show: bool = False) -> int:
     from gi.repository import GLib, Gtk
     from gi.repository import WebKit2
 
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from sni import MenuSpec, SniTray
+    from .sni import MenuSpec, SniTray
 
     class TrayApp:
         def __init__(self) -> None:
@@ -439,9 +441,12 @@ def run_gtk(icon_path: Path, show: bool = False) -> int:
                 self.core.start()
 
         def toggle_autostart(self, *_args) -> None:
-            set_autostart(not autostart_enabled(),
-                          sys.executable, SCRIPT_PATH, icon_path)
+            set_autostart(not autostart_enabled(), self._agent_trail_bin(), icon_path)
             self.update_menu()
+
+        @staticmethod
+        def _agent_trail_bin() -> str:
+            return shutil.which("agent-trail") or sys.argv[0]
 
         def refresh_now(self, *_args) -> None:
             def worker() -> None:
@@ -492,8 +497,46 @@ def run_gtk(icon_path: Path, show: bool = False) -> int:
 # -- 入口 --------------------------------------------------------------------
 
 
+def _reexec_with_system_python(argv: list[str], guard: "SingleInstance | None" = None) -> int | None:
+    """当前解释器缺 GI 绑定时，改用带 gi 的系统 Python 重执行自己。
+
+    通过 PYTHONPATH 把包所在目录传给目标解释器（对 pip 正常安装和
+    editable 源码布局都成立）；AGENT_TRAIL_TRAY_REEXEC 防止重执行环。
+    """
+    if os.environ.get("AGENT_TRAIL_TRAY_REEXEC"):
+        return None
+    candidates = ["/usr/bin/python3", "/usr/local/bin/python3", shutil.which("python3")]
+    # 包含 agent_trail 包的目录（site-packages 或 editable 的 src/）
+    import agent_trail
+    package_root = str(Path(agent_trail.__file__).resolve().parents[1])
+    seen = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen or not Path(candidate).is_file():
+            continue
+        seen.add(candidate)
+        probe = subprocess.run(
+            [candidate, "-c", "import gi"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        if probe.returncode != 0:
+            continue
+        env = dict(os.environ)
+        env["AGENT_TRAIL_TRAY_REEXEC"] = "1"
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = (
+            package_root + os.pathsep + existing if existing else package_root
+        )
+        if guard is not None:
+            guard.release()  # 父进程缺 gi 不运行 GUI，锁必须让给重执行的子进程
+        emit({"event": "tray_reexec", "python": candidate})
+        # argv 不含子命令词（cli 层已剥离），重执行时补回
+        return subprocess.call([candidate, "-m", "agent_trail", "tray", *argv], env=env)
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="agent-trail-tray", description=f"{tr('app.title')} tray")
+    replay = list(argv) if argv is not None else sys.argv[1:]
+    parser = argparse.ArgumentParser(prog="agent-trail tray", description=f"{tr('app.title')} tray")
     parser.add_argument("--install", action="store_true", help="写入应用菜单入口")
     parser.add_argument("--uninstall", action="store_true", help="移除应用菜单入口与开机自启")
     parser.add_argument("--show", action="store_true", help="启动时同时打开控制台窗口")
@@ -507,9 +550,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.install:
         APP_MENU_PATH.parent.mkdir(parents=True, exist_ok=True)
-        APP_MENU_PATH.write_text(
-            render_desktop_entry(sys.executable, SCRIPT_PATH, ICON_PATH), encoding="utf-8"
-        )
+        executable = shutil.which("agent-trail") or sys.argv[0]
+        APP_MENU_PATH.write_text(render_desktop_entry(executable, ICON_PATH), encoding="utf-8")
         print(tr("install.done", path=APP_MENU_PATH))
         return 0
 
@@ -523,10 +565,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return run_gtk(ICON_PATH, show=args.show)
     except (ImportError, ValueError) as error:
+        code = _reexec_with_system_python(replay, guard)
+        if code is not None:
+            return code
         print(
             tr("error.no_gi") + "\n"
             "  Debian/Ubuntu/deepin: sudo apt install python3-gi "
-            "gir1.2-ayatanaappindicator3-0.1 gir1.2-webkit2-4.1\n"
+            "gir1.2-webkit2-4.1\n"
             + tr("error.original", error=error),
             file=sys.stderr,
         )

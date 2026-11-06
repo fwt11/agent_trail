@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-trail"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local cross-agent work timeline: discover, browse and resume coding-agent sessions on your machine"
 readme = "README.md"
 license = "MIT"
@@ -12,10 +12,11 @@ license-files = ["LICENSE"]
 authors = [{ name = "fwt11" }]
 requires-python = ">=3.10"
 dependencies = []
-keywords = ["ai-agents", "coding-agent", "timeline", "session-management", "local-first"]
+keywords = ["ai-agents", "coding-agent", "timeline", "session-management", "local-first", "tray", "systray"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Web Environment",
+    "Environment :: X11 Applications",
     "Intended Audience :: Developers",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
@@ -26,6 +27,11 @@ classifiers = [
     "Topic :: Software Development",
 ]
 
+[project.urls]
+Homepage = "https://github.com/fwt11/agent_trail"
+Repository = "https://github.com/fwt11/agent_trail"
+Issues = "https://github.com/fwt11/agent_trail/issues"
+
 [project.scripts]
 agent-trail = "agent_trail.cli:main"
 
@@ -33,4 +39,4 @@ agent-trail = "agent_trail.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-agent_trail = ["static/*"]
+agent_trail = ["static/*", "tray/*.png", "tray/*.template"]

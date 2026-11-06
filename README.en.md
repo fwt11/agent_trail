@@ -36,6 +36,12 @@ A local-first work memory for people who use multiple coding agents: it discover
 Requires Python ≥ 3.10 and Linux for the inotify live updates (other platforms degrade to polling). **Zero third-party runtime dependencies** — standard library only.
 
 ```bash
+pip install agent-trail
+```
+
+Or from source:
+
+```bash
 git clone https://github.com/fwt11/agent_trail.git
 cd agent_trail
 pip install .
@@ -47,6 +53,7 @@ pip install .
 agent-trail scan      # scan once, print per-source status and record counts
 agent-trail list      # print all session metadata as JSON Lines
 agent-trail serve     # start the local console (opens the browser by default)
+agent-trail tray      # system tray app (Linux, see below)
 ```
 
 Common `serve` options:
@@ -65,21 +72,21 @@ The console URL carries a one-time high-entropy token (`http://127.0.0.1:8731/?k
 Beyond `serve`, a tray application embeds the console in a native window and adds a tray menu: open console, refresh, start/stop service, launch at login, quit.
 
 ```bash
-python3 tray/tray.py             # start the tray (spawns agent-trail serve)
-python3 tray/tray.py --show      # also open the console window
-python3 tray/tray.py --install   # add an applications-menu entry; --uninstall reverts
+agent-trail tray             # start the tray (spawns agent-trail serve)
+agent-trail tray --show      # also open the console window
+agent-trail tray --install   # add an applications-menu entry; --uninstall reverts
 ```
 
-The tray shell does not depend on the agent-trail package: it manages `agent-trail serve` from PATH as a subprocess (override with `AGENT_TRAIL_BIN`) and restarts it automatically if it dies. Closing the window only hides it; quit lives in the tray menu. A flock single-instance lock prevents duplicates.
-
-The shell needs a system Python with GObject Introspection bindings (no pip dependencies; preinstalled on Deepin 23 and most distros):
+The tray needs GTK GI bindings (preinstalled on most distros as the system Python). If the interpreter running agent-trail lacks them — e.g. the package lives in a venv — `agent-trail tray` automatically re-executes itself with a system Python that has GI; no manual steps. If none is found, install:
 
 ```bash
 # Debian/Ubuntu/deepin
 sudo apt install python3-gi gir1.2-webkit2-4.1
 ```
 
-The tray icon speaks the native StatusNotifierItem/DBusMenu protocol (`tray/sni.py`, implemented with Gio — libayatana and this machine's dbus-python are both unusable here; see source comments). All `serve`/CLI forms keep working without a desktop.
+The tray manages `agent-trail serve` as a subprocess (override with `AGENT_TRAIL_BIN`) and restarts it automatically with backoff if it dies. Closing the window only hides it; quit lives in the tray menu. A flock single-instance lock prevents duplicates.
+
+The tray icon speaks the native StatusNotifierItem/DBusMenu protocol (`agent_trail/tray/sni.py`, implemented with Gio — libayatana does not work against Deepin 23's tray daemon; see source comments). The embedded WebView defaults to software compositing (`WEBKIT_DISABLE_DMABUF_RENDERER` / `WEBKIT_DISABLE_COMPOSITING_MODE`, overridable via env), avoiding blank windows on sessions without DRM access. All `serve`/CLI forms keep working without a desktop.
 
 ## How it works
 

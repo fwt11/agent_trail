@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import threading
 import webbrowser
 from dataclasses import asdict
@@ -28,6 +29,10 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--no-browser", action="store_true")
     serve.add_argument("--interval", type=float, default=30)
     serve.add_argument("--no-watch", action="store_true")
+    tray = commands.add_parser("tray", help="system tray app (Linux)")
+    tray.add_argument("--show", action="store_true", help="open the console window at startup")
+    tray.add_argument("--install", action="store_true", help="add an applications-menu entry")
+    tray.add_argument("--uninstall", action="store_true", help="remove the menu entry and autostart")
     return parser
 
 
@@ -39,6 +44,14 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--port must be between 0 and 65535")
         if args.interval <= 0:
             parser.error("--interval must be positive")
+    if args.command == "tray":
+        # 托盘是独立子进程形态，不需要打开本地索引；当前解释器缺 GI
+        # 绑定时由 tray.main 内部重执行到带 gi 的系统 Python。
+        from .tray.app import main as tray_main
+        rest = list(argv) if argv is not None else sys.argv[1:]
+        if rest and rest[0] == "tray":
+            rest = rest[1:]  # 子命令词由 cli 层消费，不传给 tray 解析器
+        return tray_main(rest)
     index_path = args.data_dir.expanduser() / "index.sqlite"
     with LocalStore(index_path) as store:
         adapters = default_adapters(args.home.expanduser())
