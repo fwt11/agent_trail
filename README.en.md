@@ -84,7 +84,7 @@ The tray needs GTK GI bindings (preinstalled on most distros as the system Pytho
 sudo apt install python3-gi gir1.2-webkit2-4.1
 ```
 
-The tray manages `agent-trail serve` as a subprocess (override with `AGENT_TRAIL_BIN`) and restarts it automatically with backoff if it dies. Closing the window only hides it; quit lives in the tray menu. A flock single-instance lock prevents duplicates.
+`agent-trail tray` detaches from the terminal by default: the command returns immediately, logs append to `~/.agent-trail/tray.log`, and closing the terminal does not affect the tray; use `--foreground` to debug in the foreground. The tray manages `agent-trail serve` as a subprocess — **starting the tray starts the service** (stop/start from the menu; automatic restart with backoff if it dies). Closing the window only hides it; quit lives in the tray menu, or `kill $(cat ~/.agent-trail/tray.lock)`. A flock single-instance lock prevents duplicates (a second invocation prints "already running").
 
 The tray icon speaks the native StatusNotifierItem/DBusMenu protocol (`agent_trail/tray/sni.py`, implemented with Gio — libayatana does not work against Deepin 23's tray daemon; see source comments). The embedded WebView defaults to software compositing (`WEBKIT_DISABLE_DMABUF_RENDERER` / `WEBKIT_DISABLE_COMPOSITING_MODE`, overridable via env), avoiding blank windows on sessions without DRM access. All `serve`/CLI forms keep working without a desktop.
 

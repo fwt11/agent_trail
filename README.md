@@ -85,7 +85,7 @@ agent-trail tray --install   # 写入应用菜单入口；--uninstall 反向清�
 sudo apt install python3-gi gir1.2-webkit2-4.1
 ```
 
-托盘以子进程方式管理 `agent-trail serve`（可用环境变量 `AGENT_TRAIL_BIN` 覆盖可执行文件路径），服务异常退出自动重启（退避重试，连续失败后停在可手动启动的状态）。窗口直接关闭只是隐藏，退出走托盘菜单；flock 单实例锁防止重复启动。
+`agent-trail tray` 默认脱离终端后台运行：命令立即返回，日志追加在 `~/.agent-trail/tray.log`，关闭终端不影响托盘；`--foreground` 可前台运行调试。托盘以子进程方式管理 `agent-trail serve`——**启动托盘即自动拉起服务**（菜单里可停止/启动，异常退出自动重启）。窗口直接关闭只是隐藏，退出走托盘菜单，或 `kill $(cat ~/.agent-trail/tray.lock)`；flock 单实例锁防止重复启动（重复执行会提示"已在运行"）。
 
 托盘图标走原生 StatusNotifierItem/DBusMenu 协议（`agent_trail/tray/sni.py`，Gio 实现——libayatana 在 Deepin 23 的托盘守护上不工作，详见源码注释）。内嵌 WebView 默认使用软件合成（`WEBKIT_DISABLE_DMABUF_RENDERER` / `WEBKIT_DISABLE_COMPOSITING_MODE`，可用同名环境变量覆盖），避免在无 DRM 权限的会话里出现空白窗口。`serve` 的所有命令行形态保持不变，无托盘环境（SSH/无桌面）不受影响。
 

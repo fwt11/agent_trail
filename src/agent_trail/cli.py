@@ -31,6 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--no-watch", action="store_true")
     tray = commands.add_parser("tray", help="system tray app (Linux)")
     tray.add_argument("--show", action="store_true", help="open the console window at startup")
+    tray.add_argument("--foreground", action="store_true", help="run in the foreground (default: detach with logs in ~/.agent-trail/tray.log)")
     tray.add_argument("--install", action="store_true", help="add an applications-menu entry")
     tray.add_argument("--uninstall", action="store_true", help="remove the menu entry and autostart")
     return parser

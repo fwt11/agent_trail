@@ -96,6 +96,7 @@ def tr(key: str, **params) -> str:
 
 
 LOCK_PATH = Path.home() / ".agent-trail" / "tray.lock"
+LOG_PATH = Path.home() / ".agent-trail" / "tray.log"
 AUTOSTART_PATH = Path.home() / ".config" / "autostart" / "agent-trail-tray.desktop"
 APP_MENU_PATH = Path.home() / ".local" / "share" / "applications" / "agent-trail-tray.desktop"
 
@@ -327,6 +328,13 @@ class SingleInstance:
         os.write(self._fd, f"{os.getpid()}\n".encode())
         return True
 
+    def rewrite_pid(self) -> None:
+        """守护化后由最终进程调用：锁文件里写自己的 pid。"""
+        if self._fd is not None:
+            os.ftruncate(self._fd, 0)
+            os.lseek(self._fd, 0, os.SEEK_SET)  # ftruncate 不回卷写偏移，必须显式归零
+            os.write(self._fd, f"{os.getpid()}\n".encode())
+
     def release(self) -> None:
         if self._fd is not None:
             try:
@@ -497,6 +505,28 @@ def run_gtk(icon_path: Path, show: bool = False) -> int:
 # -- 入口 --------------------------------------------------------------------
 
 
+def _daemonize(log_path: Path) -> bool:
+    """双 fork 脱离终端；返回 False 表示当前在父进程（调用方应立即退出）。
+
+    守护进程的 stdout/stderr 追加到日志文件，stdin 接到 /dev/null。
+    单实例锁的 fd 随 fork 继承，由守护进程继续持有。
+    """
+    if os.fork() > 0:
+        return False
+    os.setsid()
+    if os.fork() > 0:
+        os._exit(0)
+    log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    null_fd = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(null_fd, 0)
+    os.dup2(log_fd, 1)
+    os.dup2(log_fd, 2)
+    for fd in (log_fd, null_fd):
+        if fd > 2:
+            os.close(fd)
+    return True
+
+
 def _reexec_with_system_python(argv: list[str], guard: "SingleInstance | None" = None) -> int | None:
     """当前解释器缺 GI 绑定时，改用带 gi 的系统 Python 重执行自己。
 
@@ -540,6 +570,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--install", action="store_true", help="写入应用菜单入口")
     parser.add_argument("--uninstall", action="store_true", help="移除应用菜单入口与开机自启")
     parser.add_argument("--show", action="store_true", help="启动时同时打开控制台窗口")
+    parser.add_argument("--foreground", action="store_true", help="前台运行（默认脱离终端后台运行，日志见 ~/.agent-trail/tray.log）")
     args = parser.parse_args(argv)
 
     if args.uninstall:
@@ -558,10 +589,14 @@ def main(argv: list[str] | None = None) -> int:
     if not ICON_PATH.is_file():
         print(tr("error.no_icon", path=ICON_PATH), file=sys.stderr)
         return 1
+    # 锁在前台获取：重复启动时提示直接出现在用户终端；fd 由守护进程继承
     guard = SingleInstance()
     if not guard.acquire():
         print(tr("error.already_running"), flush=True)
         return 0
+    if not args.foreground and not _daemonize(LOG_PATH):
+        return 0  # 父进程：立即把终端还给用户；托盘在后台继续
+    guard.rewrite_pid()  # 锁文件写守护进程的 pid，kill $(cat 锁文件) 才有效
     try:
         return run_gtk(ICON_PATH, show=args.show)
     except (ImportError, ValueError) as error:
