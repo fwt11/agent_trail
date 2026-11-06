@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Agent 足迹
+Comment=跨 Agent 工作足迹时间线（系统托盘）
+Exec=@PYTHON@ @SCRIPT@
+Icon=@ICON@
+Terminal=false
+Categories=Development;Utility;
+Keywords=agent;timeline;trail;coding-agent;

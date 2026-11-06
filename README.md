@@ -59,6 +59,27 @@ agent-trail serve --interval 30      # 轮询间隔（watch 健康时自动降�
 
 启动后控制台 URL 带一次性高熵访问令牌（如 `http://127.0.0.1:8731/?key=…`）；令牌保存在浏览器 sessionStorage，后续请求通过请求头携带，所有 API 都会校验。手动刷新按钮立即触发一次扫描。
 
+## 桌面托盘（Linux）
+
+`serve` 之外还有系统托盘形态：内嵌窗口展示控制台，托盘菜单提供打开控制台、立即刷新、启动/停止服务、开机自启和退出。
+
+```bash
+python3 tray/tray.py             # 启动托盘（自动拉起 agent-trail serve）
+python3 tray/tray.py --show      # 启动同时打开控制台窗口
+python3 tray/tray.py --install   # 写入应用菜单入口；--uninstall 反向清理
+```
+
+托盘壳本身不依赖 agent-trail 包：它以子进程方式管理 PATH 上的 `agent-trail serve`（可用环境变量 `AGENT_TRAIL_BIN` 覆盖），异常退出自动重启。窗口直接关闭只是隐藏，退出走托盘菜单；flock 单实例锁防止重复启动。
+
+托盘壳需要带 GObject Introspection 绑定的系统 Python（零 pip 依赖；Deepin 23 等发行版已预装）：
+
+```bash
+# Debian/Ubuntu/deepin 系
+sudo apt install python3-gi gir1.2-webkit2-4.1
+```
+
+托盘图标走原生 StatusNotifierItem/DBusMenu 协议（`tray/sni.py`，Gio 实现——本机的 libayatana 与 dbus-python 均不可用，详见源码注释）。`serve` 的所有命令行形态保持不变，无托盘环境（SSH/无桌面）不受影响。
+
 ## 工作原理
 
 ```
