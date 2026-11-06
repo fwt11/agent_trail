@@ -112,6 +112,11 @@ def emit(event: dict) -> None:
     print(json.dumps(event, ensure_ascii=False), flush=True)
 
 
+def _looks_executable(path: str) -> bool:
+    candidate = Path(path)
+    return candidate.is_file() and os.access(candidate, os.X_OK)
+
+
 class TrailCore:
     """平台无关的服务子进程管理器；不含任何 GUI 依赖。
 
@@ -129,9 +134,15 @@ class TrailCore:
         restart_delay: float = 3.0,
         stability_seconds: float = 300.0,
     ) -> None:
+        # serve 的拉起命令不依赖 PATH：executable 未显式给出（或给出的路径
+        # 无效）时，退到 [sys.executable, -m, agent_trail]——托盘进程自己能
+        # 跑，serve 就能跑（重执行场景的 PYTHONPATH 会被子进程继承）。
         self.executable = executable
-        if self.executable is None:
-            self.executable = os.environ.get("AGENT_TRAIL_BIN") or shutil.which("agent-trail")
+        if self.executable is not None and not _looks_executable(self.executable):
+            self.executable = None
+        self._env_bin = os.environ.get("AGENT_TRAIL_BIN")
+        if self._env_bin is not None and not _looks_executable(self._env_bin):
+            self._env_bin = None
         self.on_event = on_event or (lambda event: None)
         self.max_restarts = max_restarts
         self.restart_delay = restart_delay
@@ -150,7 +161,13 @@ class TrailCore:
 
     @property
     def available(self) -> bool:
-        return bool(self.executable)
+        return True  # 至少有 [sys.executable, -m agent_trail] 兜底
+
+    def _serve_command(self) -> list[str]:
+        for candidate in (self.executable, self._env_bin):
+            if candidate and _looks_executable(candidate):
+                return [candidate, "serve", "--no-browser"]
+        return [sys.executable, "-m", "agent_trail", "serve", "--no-browser"]
 
     def start(self, *, reset_attempts: bool = True) -> bool:
         with self._lock:
@@ -167,7 +184,7 @@ class TrailCore:
             self.url = self.port = self.key = None
             self._spawned_at = time.monotonic()
             self.process = subprocess.Popen(
-                [self.executable, "serve", "--no-browser"],
+                self._serve_command(),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
