@@ -74,8 +74,10 @@ Beyond `serve`, a tray application embeds the console in a native window and add
 ```bash
 agent-trail tray             # start the tray (spawns agent-trail serve)
 agent-trail tray --show      # also open the console window
-agent-trail tray --install   # add an applications-menu entry; --uninstall reverts
+agent-trail tray --install   # manually add an applications-menu entry; --uninstall reverts
 ```
+
+The first `agent-trail tray` run after pip install automatically registers "Agent Trail" in the desktop applications menu (searchable from your launcher) and refreshes it on upgrades; headless sessions (SSH/servers) write nothing.
 
 The tray needs GTK GI bindings (preinstalled on most distros as the system Python). If the interpreter running agent-trail lacks them — e.g. the package lives in a venv — `agent-trail tray` automatically re-executes itself with a system Python that has GI; no manual steps. If none is found, install:
 

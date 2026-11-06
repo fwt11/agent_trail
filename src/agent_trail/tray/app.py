@@ -305,6 +305,38 @@ class TrailCore:
 # -- 桌面入口文件 -----------------------------------------------------------
 
 
+def _desktop_session_present() -> bool:
+    return bool(
+        os.environ.get("DISPLAY")
+        or os.environ.get("WAYLAND_DISPLAY")
+        or os.environ.get("XDG_CURRENT_DESKTOP")
+    )
+
+
+def ensure_desktop_entry() -> None:
+    """首次运行 tray 时自动注册应用菜单入口，并在路径变化后自愈刷新。
+
+    pip 的 wheel 安装没有装后钩子，因此采用运行时自注册：仅在有桌面
+    会话的环境执行，内容与当前渲染一致时跳过写入。开机自启已开启时
+    同步刷新其 Exec 路径，避免包位置变化后自启失效。
+    """
+    if not _desktop_session_present():
+        return
+    executable = shutil.which("agent-trail") or sys.argv[0]
+    if not _looks_executable(executable):
+        return
+    entry = render_desktop_entry(executable, ICON_PATH)
+    try:
+        if not APP_MENU_PATH.exists() or APP_MENU_PATH.read_text(encoding="utf-8") != entry:
+            APP_MENU_PATH.parent.mkdir(parents=True, exist_ok=True)
+            APP_MENU_PATH.write_text(entry, encoding="utf-8")
+        if autostart_enabled():
+            if AUTOSTART_PATH.read_text(encoding="utf-8") != entry:
+                AUTOSTART_PATH.write_text(entry, encoding="utf-8")
+    except OSError:
+        pass  # 桌面注册失败不影响托盘本身；--install/--uninstall 仍可手动操作
+
+
 def render_desktop_entry(executable: str, icon: Path,
                          template: Path = DESKTOP_TEMPLATE) -> str:
     text = template.read_text(encoding="utf-8")
@@ -606,6 +638,7 @@ def main(argv: list[str] | None = None) -> int:
     if not ICON_PATH.is_file():
         print(tr("error.no_icon", path=ICON_PATH), file=sys.stderr)
         return 1
+    ensure_desktop_entry()
     # 锁在前台获取：重复启动时提示直接出现在用户终端；fd 由守护进程继承
     guard = SingleInstance()
     if not guard.acquire():
