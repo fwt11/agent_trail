@@ -11,13 +11,19 @@ const SOURCE_LABELS = Object.freeze({
   codex: "Codex",
   "claude-code": "Claude Code",
 });
-const STATUS_LABELS = Object.freeze({
-  ok: "正常",
-  unavailable: "未发现",
-  experimental: "实验性",
-  error: "暂时失败",
-  incompatible: "格式不兼容",
-});
+const t = (key, params) => window.I18N.t(key, params);
+
+function tb(key) {
+  const full = `backend.${key}`;
+  const text = t(full);
+  return text === full ? key : text;
+}
+
+const SOURCE_STATUS_KINDS = new Set(["ok", "unavailable", "experimental", "error", "incompatible"]);
+
+function statusLabel(kind) {
+  return SOURCE_STATUS_KINDS.has(kind) ? t(`srcstatus.${kind}`) : kind;
+}
 const state = {
   period: "week",
   source: "",
@@ -88,7 +94,7 @@ function element(tag, className, text) {
 }
 
 function formatTime(value) {
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat(I18N.locale, {
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
@@ -96,8 +102,8 @@ function formatTime(value) {
 }
 
 function formatFullTime(value) {
-  if (!value) return "未知";
-  return new Intl.DateTimeFormat("zh-CN", {
+  if (!value) return t("common.unknown");
+  return new Intl.DateTimeFormat(I18N.locale, {
     year: "numeric",
     month: "long",
     day: "numeric",
@@ -115,23 +121,23 @@ function dateHeading(day) {
   yesterdayDate.setDate(yesterdayDate.getDate() - 1);
   const yesterday = localDay(yesterdayDate);
   const date = new Date(`${day}T00:00:00`);
-  const formatted = new Intl.DateTimeFormat("zh-CN", {
+  const formatted = new Intl.DateTimeFormat(I18N.locale, {
     month: "long",
     day: "numeric",
   }).format(date);
-  const weekday = new Intl.DateTimeFormat("zh-CN", { weekday: "long" }).format(date);
-  const prefix = day === today ? "今天" : day === yesterday ? "昨天" : formatted;
+  const weekday = new Intl.DateTimeFormat(I18N.locale, { weekday: "long" }).format(date);
+  const prefix = day === today ? t("date.today") : day === yesterday ? t("date.yesterday") : formatted;
   return { title: prefix, subtitle: day === today || day === yesterday ? `${formatted} · ${weekday}` : weekday };
 }
 
 function sessionTitle(session) {
-  return session.title || "未命名会话";
+  return session.title || t("session.unnamed");
 }
 
 function appendStats(parent, session) {
   const stats = element("span", "change-stats");
   if (session.additions === null && session.deletions === null && session.files_changed === null) {
-    stats.textContent = "改动统计未知";
+    stats.textContent = t("stats.unknown");
   } else {
     if (session.additions !== null) {
       stats.append(element("span", "additions", `+${session.additions} `));
@@ -140,7 +146,7 @@ function appendStats(parent, session) {
       stats.append(element("span", "deletions", `−${session.deletions} `));
     }
     if (session.files_changed !== null) {
-      stats.append(document.createTextNode(`${session.files_changed} 个文件`));
+      stats.append(document.createTextNode(t("stats.files", { n: session.files_changed })));
     }
   }
   parent.append(stats);
@@ -201,7 +207,7 @@ async function loadTimeline({ quiet = false } = {}) {
     renderTimeline();
   } catch (error) {
     if (sequence !== requestSequence) return;
-    showError("时间线加载失败。请确认本地服务仍在运行，然后重试。");
+    showError(t("error.load_failed"));
   } finally {
     if (sequence === requestSequence) document.getElementById("loading").hidden = true;
   }
@@ -214,7 +220,7 @@ async function loadFilterOptions() {
   const currentProject = projectSelect.value;
   const sources = new Set(result.sessions.map((session) => session.source));
   for (const status of state.statuses) sources.add(status.source);
-  sourceSelect.replaceChildren(new Option("全部工具", ""));
+  sourceSelect.replaceChildren(new Option(t("filter.all_tools"), ""));
   for (const source of [...sources].sort()) {
     sourceSelect.add(new Option(sourceLabel(source), source));
   }
@@ -225,7 +231,7 @@ async function loadFilterOptions() {
       projects.set(session.workdir_normalized, session.workdir);
     }
   }
-  projectSelect.replaceChildren(new Option("全部项目", ""));
+  projectSelect.replaceChildren(new Option(t("filter.all_projects"), ""));
   for (const [normalized, workdir] of [...projects].sort((left, right) => left[1].localeCompare(right[1]))) {
     const option = new Option(workdir, normalized);
     option.title = workdir;
@@ -238,20 +244,20 @@ async function loadStatus() {
   const status = await api("/api/status");
   state.statuses = status.sources;
   document.getElementById("last-scan").textContent = status.last_scanned_at
-    ? `${formatTime(status.last_scanned_at)} 已扫描`
-    : "尚未扫描";
+    ? t("status.scanned_at", { time: formatTime(status.last_scanned_at) })
+    : t("status.not_scanned");
   const available = status.sources.filter((source) => source.kind === "ok").length;
-  document.getElementById("source-summary").textContent = `${available} 个可用`;
+  document.getElementById("source-summary").textContent = t("sources.available", { n: available });
   const list = document.getElementById("source-list");
   list.replaceChildren();
   for (const source of status.sources) {
     const row = element("div", "source-status");
     row.append(
       element("span", "", sourceLabel(source.source)),
-      element("span", "source-state", STATUS_LABELS[source.kind] || source.kind),
+      element("span", "source-state", statusLabel(source.kind)),
     );
     if (source.error_count) {
-      row.append(element("span", "source-error", `${source.error_count} 条不完整记录已跳过`));
+      row.append(element("span", "source-error", t("sources.skipped", { n: source.error_count })));
     }
     list.append(row);
   }
@@ -266,14 +272,14 @@ function makeSourceBadge(source) {
 function makeSessionButton(session, child = false) {
   const button = element("button", "session-main");
   button.type = "button";
-  button.setAttribute("aria-label", `查看 ${sourceLabel(session.source)} 在 ${session.workdir} 的会话详情`);
+  button.setAttribute("aria-label", t("card.aria_view", { source: sourceLabel(session.source), workdir: session.workdir }));
   const meta = element("span", "session-meta");
   if (child) {
     meta.append(element("span", "child-time", formatTime(session.updated_at)));
   } else {
     meta.append(makeSourceBadge(session.source));
   }
-  if (session.source_missing) meta.append(element("span", "missing-badge", "源记录已缺失"));
+  if (session.source_missing) meta.append(element("span", "missing-badge", t("badge.missing")));
   button.append(
     meta,
     element("span", "session-title", sessionTitle(session)),
@@ -281,7 +287,7 @@ function makeSessionButton(session, child = false) {
   );
   const footer = element("span", "session-footer");
   appendStats(footer, session);
-  if (!child) footer.append(element("span", "open-hint", "查看详情 →"));
+  if (!child) footer.append(element("span", "open-hint", t("card.open_hint")));
   button.append(footer);
   button.addEventListener("click", () => showDetails(session));
   return button;
@@ -303,11 +309,11 @@ function makeSegment(group) {
   toggle.type = "button";
   toggle.setAttribute("aria-expanded", "false");
   const meta = element("span", "session-meta");
-  meta.append(makeSourceBadge(group.source), element("span", "segment-badge", `工作段 · ${group.sessions.length} 个会话`));
+  meta.append(makeSourceBadge(group.source), element("span", "segment-badge", t("segment.badge", { n: group.sessions.length })));
   const footer = element("span", "session-footer");
   footer.append(
     element("span", "", `${formatTime(group.sessions.at(-1).updated_at)} — ${formatTime(latest.updated_at)}`),
-    element("span", "open-hint", "展开工作段 ↓"),
+    element("span", "open-hint", t("segment.expand")),
   );
   toggle.append(
     meta,
@@ -367,25 +373,25 @@ function showDetails(session) {
   const stats = document.getElementById("detail-stats");
   stats.replaceChildren();
   appendStats(stats, session);
-  document.getElementById("detail-locator").textContent = session.source_locator || "未知";
+  document.getElementById("detail-locator").textContent = session.source_locator || t("common.unknown");
   const warning = document.getElementById("detail-warning");
   warning.hidden = !session.source_missing;
-  warning.textContent = session.source_missing ? "原会话记录已缺失。这里保留的是最后一次本地元数据，不能恢复原会话。" : "";
+  warning.textContent = session.source_missing ? t("resume.warning_missing") : "";
   const resume = document.getElementById("resume-button");
   const supported = session.resume_kind === "cli";
   resume.hidden = !supported;
   resume.disabled = !supported || session.source_missing || !session.workdir_exists || session.cli_available === false;
   const reason = document.getElementById("resume-reason");
   if (!supported) {
-    reason.textContent = "目前仅支持查看；此工具的会话恢复路径尚未验证。";
+    reason.textContent = t("resume.reason_view_only");
   } else if (session.source_missing) {
-    reason.textContent = "源记录已缺失，恢复已停用。";
+    reason.textContent = t("resume.reason_missing");
   } else if (!session.workdir_exists) {
-    reason.textContent = "原工作目录不存在，恢复已停用；不会改到其他目录。";
+    reason.textContent = t("resume.reason_noworkdir");
   } else if (session.cli_available === false) {
-    reason.textContent = "未在 PATH 中找到原工具";
+    reason.textContent = t("resume.reason_no_cli");
   } else {
-    reason.textContent = "将在原目录发起一个新终端。请在原工具中确认会话是否打开。";
+    reason.textContent = t("resume.reason_ok");
   }
   dialog.showModal();
 }
@@ -453,9 +459,9 @@ function bindControls() {
     try {
       await api("/api/refresh", { method: "POST" });
       await Promise.all([loadStatus(), loadFilterOptions(), loadTimeline({ quiet: true })]);
-      showToast("足迹已刷新。");
+      showToast(t("toast.refreshed"));
     } catch (error) {
-      showToast("刷新失败，请检查本地服务状态。");
+      showToast(t("toast.refresh_failed"));
     } finally {
       button.disabled = false;
       button.classList.remove("is-refreshing");
@@ -473,13 +479,14 @@ function bindControls() {
     const button = document.getElementById("resume-button");
     button.disabled = true;
     try {
-      await api("/api/resume", {
+      const payload = await api("/api/resume", {
         method: "POST",
         body: JSON.stringify({ source: session.source, session_id: session.session_id }),
       });
-      showToast("已发起终端，请在原工具中确认会话。");
+      showToast(payload.message ? tb(payload.message) : t("toast.resume_sent"));
     } catch (error) {
-      showToast(error.payload?.message || "无法发起恢复；目录或原工具可能不可用。请查看本地服务状态。");
+      const raw = error.payload?.message;
+      showToast(raw ? tb(raw) : t("toast.resume_failed"));
     } finally {
       button.disabled = session.resume_kind !== "cli" || session.source_missing || !session.workdir_exists || session.cli_available === false;
     }
@@ -494,7 +501,7 @@ async function initialize() {
   if (!apiKey) {
     document.getElementById("loading").hidden = true;
     document.getElementById("refresh-button").disabled = true;
-    showError("此标签页没有访问密钥。请从终端启动 agent-trail serve，并打开它输出的完整链接。");
+    showError(t("error.no_key"));
     return;
   }
   if (urlKey) history.replaceState({}, "", window.location.pathname);
@@ -512,7 +519,7 @@ if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
     initialize().catch(() => {
       document.getElementById("loading").hidden = true;
-      showError("控制台初始化失败。请确认本地服务和访问链接有效。");
+      showError(t("error.init_failed"));
     });
   });
 }

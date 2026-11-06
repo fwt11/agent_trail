@@ -1,5 +1,7 @@
 # Agent 足迹（agent-trail）
 
+中文 | [English](README.en.md)
+
 跨 Agent 的本地工作记忆：自动发现你机器上各种编码 Agent 留下的会话记录，汇成一条按日期分组的时间线，帮你回答"昨天那个东西我到底是用哪个工具、在哪个目录做的"，并尽量一键回到原会话继续工作。
 
 ![时间线截图](docs/screenshot.png)

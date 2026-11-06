@@ -300,3 +300,8 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+.lang-switch { display: inline-flex; border: 1px solid var(--line); border-radius: 3px; overflow: hidden; }
+.lang-switch button { padding: 4px 9px; border: 0; background: transparent; color: var(--muted); font-family: var(--font-mono); font-size: 10px; cursor: pointer; }
+.lang-switch button + button { border-left: 1px solid var(--line); }
+.lang-switch button.lang-active { color: var(--paper); background: var(--forest); }

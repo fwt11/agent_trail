@@ -47,19 +47,19 @@ class TerminalLauncher:
             or not plan.executable
             or plan.executable not in self._allowed_executables
         ):
-            return LaunchResult(False, "此会话没有已验证的恢复方式")
+            return LaunchResult(False, "resume.no_verified_path")
         if not plan.workdir or not Path(plan.workdir).is_dir():
-            return LaunchResult(False, "原工作目录不存在，未启动终端")
+            return LaunchResult(False, "resume.workdir_missing")
         if not shutil.which(plan.executable):
-            return LaunchResult(False, f"未在 PATH 中找到 {plan.executable}，未启动终端")
+            return LaunchResult(False, "resume.cli_not_found")
         if not all(isinstance(argument, str) and "\0" not in argument for argument in plan.args):
-            return LaunchResult(False, "恢复参数无效，未启动终端")
+            return LaunchResult(False, "resume.invalid_args")
         try:
             terminal, template = self._terminal_command()
         except ValueError:
-            return LaunchResult(False, "终端参数配置无效")
+            return LaunchResult(False, "resume.terminal_config_invalid")
         if terminal is None:
-            return LaunchResult(False, "未找到可用终端，请配置 AGENT_TRAIL_TERMINAL")
+            return LaunchResult(False, "resume.no_terminal")
         command = [plan.executable, *plan.args]
         arguments = [
             argument
@@ -85,8 +85,8 @@ class TerminalLauncher:
                 start_new_session=True,
             )
         except OSError:
-            return LaunchResult(False, "终端启动失败，请检查终端配置")
-        return LaunchResult(True, "已发起，请在原工具中确认恢复结果", process.pid)
+            return LaunchResult(False, "resume.launch_failed")
+        return LaunchResult(True, "resume.launch_ok", process.pid)
 
     def _terminal_command(self) -> tuple[str | None, tuple[str, ...]]:
         terminal_name = self.terminal or os.environ.get("AGENT_TRAIL_TERMINAL")

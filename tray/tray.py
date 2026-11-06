@@ -29,7 +29,72 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-APP_TITLE = "Agent 足迹"
+def _detect_locale() -> str:
+    override = os.environ.get("AGENT_TRAIL_LANG")
+    if override:
+        return "zh-CN" if override.lower().startswith("zh") else "en"
+    for name in ("LC_ALL", "LC_MESSAGES", "LANG"):
+        value = os.environ.get(name, "")
+        if value:
+            return "zh-CN" if value.lower().startswith("zh") else "en"
+    return "en"
+
+
+LOCALE = _detect_locale()
+
+STRINGS = {
+    "zh-CN": {
+        "app.title": "Agent 足迹",
+        "app.tooltip": "跨 Agent 的工作足迹时间线",
+        "status.no_agent": "状态：未找到 agent-trail（请安装或设置 AGENT_TRAIL_BIN）",
+        "status.running": "状态：运行中 · 127.0.0.1:{port}",
+        "status.starting": "状态：启动中…",
+        "status.crashed": "状态：异常退出（已自动重试 {n} 次）",
+        "status.stopped": "状态：已停止",
+        "menu.open": "打开控制台",
+        "menu.refresh": "立即刷新",
+        "menu.stop": "停止服务",
+        "menu.start": "启动服务",
+        "menu.autostart": "开机自启",
+        "menu.quit": "退出",
+        "install.removed": "已移除 {path}",
+        "install.done": "已安装 {path}",
+        "error.no_icon": "缺少图标文件：{path}",
+        "error.already_running": "Agent 足迹 托盘已在运行",
+        "error.no_gi": "缺少 GI 绑定，无法启动托盘：",
+        "error.original": "原始错误：{error}",
+    },
+    "en": {
+        "app.title": "Agent Trail",
+        "app.tooltip": "Cross-agent work timeline",
+        "status.no_agent": "Status: agent-trail not found (install it or set AGENT_TRAIL_BIN)",
+        "status.running": "Status: running · 127.0.0.1:{port}",
+        "status.starting": "Status: starting…",
+        "status.crashed": "Status: exited unexpectedly ({n} automatic retries)",
+        "status.stopped": "Status: stopped",
+        "menu.open": "Open console",
+        "menu.refresh": "Refresh now",
+        "menu.stop": "Stop service",
+        "menu.start": "Start service",
+        "menu.autostart": "Launch at login",
+        "menu.quit": "Quit",
+        "install.removed": "Removed {path}",
+        "install.done": "Installed {path}",
+        "error.no_icon": "Missing icon file: {path}",
+        "error.already_running": "Agent Trail tray is already running",
+        "error.no_gi": "Missing GI bindings, cannot start the tray:",
+        "error.original": "Original error: {error}",
+    },
+}
+
+
+def tr(key: str, **params) -> str:
+    text = STRINGS[LOCALE].get(key) or STRINGS["en"].get(key) or key
+    for name, value in params.items():
+        text = text.replace("{" + name + "}", str(value))
+    return text
+
+
 LOCK_PATH = Path.home() / ".agent-trail" / "tray.lock"
 AUTOSTART_PATH = Path.home() / ".config" / "autostart" / "agent-trail-tray.desktop"
 APP_MENU_PATH = Path.home() / ".local" / "share" / "applications" / "agent-trail-tray.desktop"
@@ -289,7 +354,7 @@ def run_gtk(icon_path: Path, show: bool = False) -> int:
     class TrayApp:
         def __init__(self) -> None:
             self.core = TrailCore(on_event=lambda event: GLib.idle_add(self.on_event, event))
-            self.tray = SniTray(APP_TITLE, "跨 Agent 的工作足迹时间线", icon_path)
+            self.tray = SniTray(tr("app.title"), tr("app.tooltip"), icon_path)
             self.tray.bind_activate(self.open_console)
             self.window: Gtk.Window | None = None
             self.view: WebKit2.WebView | None = None
@@ -300,28 +365,28 @@ def run_gtk(icon_path: Path, show: bool = False) -> int:
         def update_menu(self) -> None:
             core = self.core
             if not core.available:
-                status = "状态：未找到 agent-trail（请安装或设置 AGENT_TRAIL_BIN）"
+                status = tr("status.no_agent")
             elif core.state == "running":
-                status = f"状态：运行中 · 127.0.0.1:{core.port}"
+                status = tr("status.running", port=core.port)
             elif core.state == "starting":
-                status = "状态：启动中…"
+                status = tr("status.starting")
             elif core.state == "crashed":
-                status = f"状态：异常退出（已自动重试 {core.max_restarts} 次）"
+                status = tr("status.crashed", n=core.max_restarts)
             else:
-                status = "状态：已停止"
+                status = tr("status.stopped")
             running = core.state == "running"
             service_live = core.process is not None
             self.tray.set_menu([
                 MenuSpec(status, enabled=False),
-                MenuSpec("打开控制台", enabled=running, action=self.open_console),
-                MenuSpec("立即刷新", enabled=running, action=self.refresh_now),
+                MenuSpec(tr("menu.open"), enabled=running, action=self.open_console),
+                MenuSpec(tr("menu.refresh"), enabled=running, action=self.refresh_now),
                 MenuSpec(is_separator=True),
-                MenuSpec("停止服务" if service_live else "启动服务",
+                MenuSpec(tr("menu.stop") if service_live else tr("menu.start"),
                          enabled=core.available, action=self.toggle_service),
-                MenuSpec("开机自启", is_check=True, checked=autostart_enabled(),
+                MenuSpec(tr("menu.autostart"), is_check=True, checked=autostart_enabled(),
                          action=self.toggle_autostart),
                 MenuSpec(is_separator=True),
-                MenuSpec("退出", action=self.quit),
+                MenuSpec(tr("menu.quit"), action=self.quit),
             ])
 
         # 状态事件 -----------------------------------------------------------
@@ -348,7 +413,7 @@ def run_gtk(icon_path: Path, show: bool = False) -> int:
 
         def show_window(self, url: str) -> None:
             if self.window is None:
-                window = Gtk.Window(title=APP_TITLE)
+                window = Gtk.Window(title=tr("app.title"))
                 window.set_default_size(1280, 820)
                 view = WebKit2.WebView()
                 window.add(view)
@@ -423,7 +488,7 @@ def run_gtk(icon_path: Path, show: bool = False) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="agent-trail-tray", description=f"{APP_TITLE} 托盘")
+    parser = argparse.ArgumentParser(prog="agent-trail-tray", description=f"{tr('app.title')} tray")
     parser.add_argument("--install", action="store_true", help="写入应用菜单入口")
     parser.add_argument("--uninstall", action="store_true", help="移除应用菜单入口与开机自启")
     parser.add_argument("--show", action="store_true", help="启动时同时打开控制台窗口")
@@ -433,31 +498,31 @@ def main(argv: list[str] | None = None) -> int:
         for target in (APP_MENU_PATH, AUTOSTART_PATH):
             if target.exists():
                 target.unlink()
-                print(f"已移除 {target}")
+                print(tr("install.removed", path=target))
         return 0
     if args.install:
         APP_MENU_PATH.parent.mkdir(parents=True, exist_ok=True)
         APP_MENU_PATH.write_text(
             render_desktop_entry(sys.executable, SCRIPT_PATH, ICON_PATH), encoding="utf-8"
         )
-        print(f"已安装 {APP_MENU_PATH}")
+        print(tr("install.done", path=APP_MENU_PATH))
         return 0
 
     if not ICON_PATH.is_file():
-        print(f"缺少图标文件：{ICON_PATH}", file=sys.stderr)
+        print(tr("error.no_icon", path=ICON_PATH), file=sys.stderr)
         return 1
     guard = SingleInstance()
     if not guard.acquire():
-        print(f"{APP_TITLE} 托盘已在运行", flush=True)
+        print(tr("error.already_running"), flush=True)
         return 0
     try:
         return run_gtk(ICON_PATH, show=args.show)
     except (ImportError, ValueError) as error:
         print(
-            "缺少 GI 绑定，无法启动托盘：\n"
+            tr("error.no_gi") + "\n"
             "  Debian/Ubuntu/deepin: sudo apt install python3-gi "
             "gir1.2-ayatanaappindicator3-0.1 gir1.2-webkit2-4.1\n"
-            f"  原始错误：{error}",
+            + tr("error.original", error=error),
             file=sys.stderr,
         )
         return 1

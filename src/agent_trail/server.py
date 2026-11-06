@@ -117,12 +117,12 @@ class LocalServer:
             (item for item in self.scanner.adapters if item.source == source), None
         )
         if session is None or adapter is None:
-            return 404, {"status": "unavailable", "message": "找不到对应的本地会话"}
+            return 404, {"status": "unavailable", "message": "session_not_found"}
         if session.source_missing:
-            return 409, {"status": "unavailable", "message": "源记录已缺失，无法恢复"}
+            return 409, {"status": "unavailable", "message": "session_source_missing"}
         plan = adapter.resume_plan(session)
         if plan.kind != "cli":
-            return 409, {"status": "unavailable", "message": "目前仅支持查看此会话"}
+            return 409, {"status": "unavailable", "message": "session_view_only"}
         result = self.launcher.launch(plan)
         if not result.ok:
             return 409, {"status": "unavailable", "message": result.message}
@@ -187,6 +187,8 @@ class _RequestHandler(BaseHTTPRequestHandler):
                 self._static("styles.css", "text/css; charset=utf-8")
             elif path == "/app.js":
                 self._static("app.js", "text/javascript; charset=utf-8")
+            elif path == "/i18n.js":
+                self._static("i18n.js", "text/javascript; charset=utf-8")
             else:
                 self._error(404)
         except (ValueError, TypeError):
