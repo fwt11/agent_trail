@@ -78,7 +78,7 @@ agent-trail tray --show      # 启动同时打开控制台窗口
 agent-trail tray --install   # 手动写入应用菜单入口；--uninstall 反向清理
 ```
 
-pip 安装后首次运行 `agent-trail tray` 会自动把"Agent 足迹"注册进系统应用菜单（应用启动器可直接搜索到），之后升级换路径也会自动刷新；无桌面会话（SSH/服务器）不写入。
+pip 安装后首次运行 `agent-trail tray` 会自动把"Agent 足迹"注册进系统应用菜单（应用启动器可直接搜索到）。Deepin 的自启动加载器会劫持指向 Python 脚本的 Exec 强制用系统解释器执行，故自启条目以 `/bin/sh -c exec` 包装规避"Agent 足迹"注册进系统应用菜单（应用启动器可直接搜索到），之后升级换路径也会自动刷新；无桌面会话（SSH/服务器）不写入。
 
 托盘壳本身不依赖任何第三方 pip 包，但需要 GTK 的 GI 绑定（系统 Python 通常自带）。`agent-trail tray` 在当前解释器缺 GI 绑定时会自动改用带绑定的系统 Python 重执行（例如 pip 装在 venv 里、托盘跑在系统 Python），无需任何手动操作；实在找不到时按提示安装：
 

@@ -339,8 +339,17 @@ def ensure_desktop_entry() -> None:
 
 def render_desktop_entry(executable: str, icon: Path,
                          template: Path = DESKTOP_TEMPLATE) -> str:
+    # Deepin 的 app-launch-helper 会对「指向 Python 脚本」的 Exec 强制改用
+    # /usr/bin/python3 执行（无视 shebang），venv 安装直接 ModuleNotFoundError。
+    # 用 /bin/sh -c exec 包装：加载器看到 ELF 二进制就不再劫持，sh 按
+    # shebang 正确执行。executable 路径内的单引号会破坏该包装（极少见），
+    # 此时回退为直连形式。
+    if "'" not in executable:
+        exec_line = f'/bin/sh -c "exec \'{executable}\' tray"'
+    else:
+        exec_line = f"{executable} tray"
     text = template.read_text(encoding="utf-8")
-    return text.replace("@EXEC@", f"{executable} tray").replace("@ICON@", str(icon))
+    return text.replace("@EXEC@", exec_line).replace("@ICON@", str(icon))
 
 
 def autostart_enabled(target: Path = AUTOSTART_PATH) -> bool:

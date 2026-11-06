@@ -77,7 +77,7 @@ agent-trail tray --show      # also open the console window
 agent-trail tray --install   # manually add an applications-menu entry; --uninstall reverts
 ```
 
-The first `agent-trail tray` run after pip install automatically registers "Agent Trail" in the desktop applications menu (searchable from your launcher) and refreshes it on upgrades; headless sessions (SSH/servers) write nothing.
+The first `agent-trail tray` run after pip install automatically registers "Agent Trail" in the desktop applications menu (searchable from your launcher) and refreshes it on upgrades; headless sessions (SSH/servers) write nothing. Deepin's autostart launcher forces Python-script Exec entries through the system interpreter, so the entry is wrapped as `/bin/sh -c exec '<path>' tray` to keep the venv shebang working.
 
 The tray needs GTK GI bindings (preinstalled on most distros as the system Python). If the interpreter running agent-trail lacks them — e.g. the package lives in a venv — `agent-trail tray` automatically re-executes itself with a system Python that has GI; no manual steps. If none is found, install:
 
