@@ -37,7 +37,7 @@
 要求：Python ≥ 3.10，Linux（inotify 实时监控为 Linux 特性，其余平台自动退化为轮询）。**零第三方运行时依赖**，纯标准库。
 
 ```bash
-pip install agent-trail
+pip install session-trail
 ```
 
 或从源码安装：

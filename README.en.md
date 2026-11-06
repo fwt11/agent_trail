@@ -36,7 +36,7 @@ A local-first work memory for people who use multiple coding agents: it discover
 Requires Python ≥ 3.10 and Linux for the inotify live updates (other platforms degrade to polling). **Zero third-party runtime dependencies** — standard library only.
 
 ```bash
-pip install agent-trail
+pip install session-trail
 ```
 
 Or from source:
