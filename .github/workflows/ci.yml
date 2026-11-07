@@ -103,22 +103,19 @@ jobs:
 
           print("engine unit checks OK on", sys.platform)
           PY
-      - name: Smoke test in a fresh venv (POSIX)
-        if: runner.os != 'Windows'
+      - name: Smoke test in a fresh venv
+        shell: bash
         run: |
           python -m venv .smoke-venv
-          .smoke-venv/bin/pip install --quiet dist/*.whl
-          .smoke-venv/bin/agent-trail --help > /dev/null
-          .smoke-venv/bin/agent-trail --home "$HOME" --data-dir "$PWD/.smoke-data" scan | tail -2
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            PIP=.smoke-venv/Scripts/pip.exe
+            EXE=.smoke-venv/Scripts/agent-trail.exe
+          else
+            PIP=.smoke-venv/bin/pip
+            EXE=.smoke-venv/bin/agent-trail
+          fi
+          "$PIP" install --quiet dist/*.whl
+          "$EXE" --help > /dev/null
+          "$EXE" --home "$HOME" --data-dir "$PWD/.smoke-data" scan | tail -2
           test -f "$PWD/.smoke-data/index.sqlite"
           echo "smoke OK"
-      - name: Smoke test in a fresh venv (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          python -m venv .smoke-venv
-          .smoke-venv\Scripts\pip.exe install --quiet dist/*.whl
-          & .smoke-venv\Scripts\agent-trail.exe --help | Out-Null
-          & .smoke-venv\Scripts\agent-trail.exe --home "$HOME" --data-dir "$PWD\.smoke-data" scan | Select-Object -Last 2
-          if (-not (Test-Path "$PWD\.smoke-data\index.sqlite")) { throw "index.sqlite missing" }
-          Write-Output "smoke OK"
