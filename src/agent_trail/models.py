@@ -40,7 +40,7 @@ class ActivitySession:
             object.__setattr__(
                 self,
                 "workdir_normalized",
-                os.path.normpath(os.path.expanduser(self.workdir)),
+                _normalize_path(self.workdir),
             )
 
 
@@ -84,3 +84,14 @@ class SessionFilter:
     query: str | None = None
     limit: int = 200
     offset: int = 0
+
+
+def _normalize_path(value: str) -> str:
+    """规范化工作目录：POSIX 保持现状；Windows 追加大小写归一。
+
+    NTFS 大小写不敏感，同一目录的两种写法应匹配到同一条记录。
+    """
+    normalized = os.path.normpath(os.path.expanduser(value))
+    if os.name == "nt":
+        normalized = normalized.lower()
+    return normalized

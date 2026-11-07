@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,6 +22,7 @@ class TerminalLauncher:
     _allowed_executables = frozenset(
         {"kimi", "codebuddy", "mcode", "dst", "pi", "opencode", "codex"}
     )
+    # Linux 检测列表；Windows/macOS 见 _terminals_for_platform()。
     _terminals = (
         ("x-terminal-emulator", ("-e",)),
         ("gnome-terminal", ("--",)),
@@ -31,6 +33,10 @@ class TerminalLauncher:
         ("alacritty", ("-e",)),
         ("foot", ("--",)),
         ("xterm", ("-e",)),
+    )
+    _terminals_windows = (
+        ("wt.exe", ("-d", "{workdir}", "cmd", "/k", "{command}")),
+        ("cmd.exe", ("/c", "start", "/D", "{workdir}", "{command}")),
     )
 
     def __init__(
@@ -74,6 +80,10 @@ class TerminalLauncher:
         ]
         if "{command}" not in template:
             arguments.extend(command)
+        popen_kwargs = {"close_fds": True}
+        if os.name == "posix":
+            # 新会话脱离当前终端；Windows 上该参数不存在（ValueError）。
+            popen_kwargs["start_new_session"] = True
         try:
             process = subprocess.Popen(
                 [terminal, *arguments],
@@ -81,12 +91,17 @@ class TerminalLauncher:
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                close_fds=True,
-                start_new_session=True,
+                **popen_kwargs,
             )
         except OSError:
             return LaunchResult(False, "resume.launch_failed")
         return LaunchResult(True, "resume.launch_ok", process.pid)
+
+    @staticmethod
+    def _terminals_for_platform() -> tuple:
+        if sys.platform == "win32":
+            return TerminalLauncher._terminals_windows
+        return TerminalLauncher._terminals  # POSIX（含 macOS 的回退路径）
 
     def _terminal_command(self) -> tuple[str | None, tuple[str, ...]]:
         terminal_name = self.terminal or os.environ.get("AGENT_TRAIL_TERMINAL")
@@ -99,7 +114,7 @@ class TerminalLauncher:
             if template.count("{command}") > 1:
                 raise ValueError("duplicate command placeholder")
             return shutil.which(terminal_name), template
-        for name, arguments in self._terminals:
+        for name, arguments in self._terminals_for_platform():
             terminal = shutil.which(name)
             if terminal:
                 return terminal, arguments

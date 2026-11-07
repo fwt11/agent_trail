@@ -1,9 +1,15 @@
-"""inotify-backed change notification for agent session sources.
+"""Change notification for agent session sources, with pluggable backends.
 
-Uses ctypes against libc directly so the project stays on the standard
-library.  The watcher never replaces the scan itself: it only replaces
-the timer that wakes :meth:`ScanService.scan_all`.  Fingerprints remain
-the cheap dedup layer, so any spurious event degrades to a fast no-op.
+The watcher never replaces the scan itself: it only replaces the timer
+that wakes :meth:`ScanService.scan_all`.  Fingerprints remain the cheap
+dedup layer, so any spurious trigger degrades to a fast no-op.
+
+Backends:
+- Linux: ``SourceWatcher`` — inotify(7) via ctypes against libc, seconds
+  level latency, directory-level watches with recursive growth.
+- Windows/macOS (and Linux fallback): ``PollingWatcher`` — a background
+  thread polls a lightweight signature (paths + size + mtime) of the
+  watched roots every few seconds and feeds the same debounce window.
 """
 
 from __future__ import annotations
@@ -12,6 +18,7 @@ import ctypes
 import os
 import select
 import struct
+import sys
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -101,12 +108,91 @@ def parse_events(raw: bytes) -> list[tuple[int, int, str]]:
     return events
 
 
-class SourceWatcher:
-    """Debounced, directory-level inotify watcher.
+class BaseWatcher:
+    """Shared watcher interface + the debounce/minimum-spacing time window.
 
-    ``on_change`` runs on the watch thread; the existing scan lock keeps it
-    serialized against manual refreshes and the safety-net poll.
+    Backends detect change and call :meth:`_note_activity`; the shared
+    window coalesces bursts and :meth:`_maybe_trigger` invokes
+    ``on_change`` when the deadline passes.  ``on_change`` runs on the
+    backend thread; the scan lock keeps it serialized against manual
+    refreshes and the safety-net poll.
     """
+
+    kind = "base"
+
+    def __init__(
+        self,
+        roots: list[tuple[Path, bool]],
+        on_change: Callable[[], None],
+        *,
+        debounce_seconds: float = 1.0,
+        min_spacing_seconds: float = 5.0,
+    ) -> None:
+        self._roots = [(Path(path), recursive) for path, recursive in roots]
+        self._on_change = on_change
+        self._debounce = debounce_seconds
+        self._min_spacing = min_spacing_seconds
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+        self._pending = False
+        self._deadline = 0.0
+        self._first_pending = 0.0
+        self._last_trigger = 0.0
+        self.last_error: str | None = None
+
+    @property
+    def healthy(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    @property
+    def watch_count(self) -> int:
+        raise NotImplementedError
+
+    def start(self) -> bool:
+        raise NotImplementedError
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+
+    def resync(self) -> None:
+        """Re-arm the backend after safety-net scans (idempotent)."""
+        return None
+
+    # -- shared debounce window ----------------------------------------------
+
+    def _note_activity(self, now: float) -> None:
+        if not self._pending:
+            self._first_pending = now
+        self._pending = True
+        # Push the deadline out for new activity, but never starve a
+        # busy source: pending work fires at most min_spacing after the
+        # first event of the burst.
+        cap = self._first_pending + max(self._min_spacing, self._debounce)
+        self._deadline = min(now + self._debounce, cap)
+
+    def _maybe_trigger(self) -> None:
+        if not self._pending or monotonic() < self._deadline:
+            return
+        now = monotonic()
+        spacing = self._last_trigger + self._min_spacing - now
+        if spacing > 0:
+            self._deadline = now + spacing
+            return
+        self._pending = False
+        self._last_trigger = now
+        try:
+            self._on_change()
+        except Exception as error:
+            # Keep watching; the failure type carries no source content.
+            self.last_error = f"{type(error).__name__}: {error}"
+
+
+class SourceWatcher(BaseWatcher):
+    """Debounced, directory-level inotify watcher (Linux)."""
+
+    kind = "inotify"
 
     def __init__(
         self,
@@ -117,23 +203,16 @@ class SourceWatcher:
         min_spacing_seconds: float = 5.0,
         max_watches: int = 2048,
     ) -> None:
-        self._roots = [(Path(path), recursive) for path, recursive in roots]
-        self._on_change = on_change
-        self._debounce = debounce_seconds
-        self._min_spacing = min_spacing_seconds
+        super().__init__(
+            roots, on_change,
+            debounce_seconds=debounce_seconds, min_spacing_seconds=min_spacing_seconds,
+        )
         self._max_watches = max_watches
         self._libc = libc_inotify()
         self._fd: int | None = None
-        self._thread: threading.Thread | None = None
-        self._stop = threading.Event()
         self._lock = threading.Lock()
         self._wds: dict[int, Path] = {}
         self._paths: set[Path] = set()
-        self._pending = False
-        self._deadline = 0.0
-        self._first_pending = 0.0
-        self._last_trigger = 0.0
-        self.last_error: str | None = None
         self.overflowed = False
 
     @property
@@ -167,9 +246,7 @@ class SourceWatcher:
         return True
 
     def stop(self) -> None:
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=5)
+        super().stop()
         fd, self._fd = self._fd, None
         if fd is not None:
             os.close(fd)
@@ -272,30 +349,147 @@ class SourceWatcher:
                     parent = self._wds.get(wd)
                     if parent is not None and name:
                         self._add_tree_locked(parent / name, True)
-            if not self._pending:
-                self._first_pending = now
-            self._pending = True
-            # Push the deadline out for new activity, but never starve a
-            # busy source: pending work fires at most min_spacing after the
-            # first event of the burst.
-            cap = self._first_pending + max(self._min_spacing, self._debounce)
-            self._deadline = min(now + self._debounce, cap)
+            self._note_activity(now)
 
-    def _maybe_trigger(self) -> None:
-        if not self._pending or monotonic() < self._deadline:
-            return
-        now = monotonic()
-        spacing = self._last_trigger + self._min_spacing - now
-        if spacing > 0:
-            self._deadline = now + spacing
-            return
-        self._pending = False
-        self._last_trigger = now
+
+class PollingWatcher(BaseWatcher):
+    """Portable backend: poll a lightweight signature of the watched roots.
+
+    Used on Windows/macOS where inotify does not exist.  The signature is
+    existence + per-file (size, mtime_ns) over the root trees — enough to
+    notice session files appearing, growing or vanishing without parsing
+    any content.  Resolution is therefore ``poll_seconds`` (default 5s)
+    rather than seconds-level like inotify; the fingerprint dedup layer
+    makes extra triggers cheap.
+    """
+
+    kind = "polling"
+
+    def __init__(
+        self,
+        roots: list[tuple[Path, bool]],
+        on_change: Callable[[], None],
+        *,
+        debounce_seconds: float = 1.0,
+        min_spacing_seconds: float = 5.0,
+        poll_seconds: float = 5.0,
+    ) -> None:
+        super().__init__(
+            roots, on_change,
+            debounce_seconds=debounce_seconds, min_spacing_seconds=min_spacing_seconds,
+        )
+        self._poll_seconds = poll_seconds
+        self._signature: tuple | None = None
+
+    @property
+    def watch_count(self) -> int:
+        return len(self._roots)
+
+    def start(self) -> bool:
         try:
-            self._on_change()
+            self._signature = self._compute_signature()
         except Exception as error:
-            # Keep watching; the failure type carries no source content.
-            self.last_error = f"{type(error).__name__}: {error}"
+            self.last_error = f"signature scan failed: {type(error).__name__}"
+            return False
+        self._thread = threading.Thread(
+            target=self._run, name="agent-trail-watch", daemon=True
+        )
+        self._thread.start()
+        return True
+
+    # -- signature ------------------------------------------------------------
+
+    def _compute_signature(self) -> tuple:
+        parts: list = []
+        for path, recursive in self._roots:
+            if not path.is_dir():
+                # Missing root: watch the nearest existing ancestor so its
+                # creation is noticed (same semantics as the inotify backend).
+                ancestor = _nearest_existing_ancestor(path)
+                if ancestor is None:
+                    parts.append((str(path), "missing"))
+                    continue
+                parts.append((str(path), "missing", self._dir_signature(ancestor, False)))
+            elif recursive:
+                parts.append((str(path), True, self._tree_signature(path)))
+            else:
+                parts.append((str(path), False, self._dir_signature(path, True)))
+        return tuple(parts)
+
+    def _tree_signature(self, root: Path) -> tuple:
+        parts: list = []
+        for current, dirs, files in os.walk(root):
+            dirs.sort()
+            for name in sorted(files):
+                file_path = Path(current) / name
+                try:
+                    stat = file_path.stat()
+                    parts.append((str(file_path), stat.st_size, stat.st_mtime_ns))
+                except OSError:
+                    parts.append((str(file_path), "unreadable"))
+        return tuple(parts)
+
+    def _dir_signature(self, directory: Path, entries: bool) -> tuple:
+        parts: list = [str(directory)]
+        try:
+            stat = directory.stat()
+            parts.append((stat.st_size, stat.st_mtime_ns))
+        except OSError:
+            parts.append("unreadable")
+            return tuple(parts)
+        if entries:
+            try:
+                for entry in sorted(directory.iterdir()):
+                    try:
+                        stat = entry.stat()
+                        parts.append((entry.name, stat.st_size, stat.st_mtime_ns))
+                    except OSError:
+                        parts.append((entry.name, "unreadable"))
+            except OSError:
+                parts.append("unreadable-entries")
+        return tuple(parts)
+
+    # -- loop -----------------------------------------------------------------
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._poll_seconds):
+            now = monotonic()
+            try:
+                signature = self._compute_signature()
+            except Exception as error:
+                self.last_error = f"signature scan failed: {type(error).__name__}"
+                continue
+            if signature != self._signature:
+                self._signature = signature
+                self._note_activity(now)
+            self._maybe_trigger()
+        # Drain a pending trigger on shutdown so the last change is not lost.
+        self._maybe_trigger()
+
+
+def create_watcher(
+    roots: list[tuple[Path, bool]],
+    on_change: Callable[[], None],
+    *,
+    debounce_seconds: float = 1.0,
+    min_spacing_seconds: float = 5.0,
+    poll_seconds: float = 5.0,
+    **kwargs,
+) -> BaseWatcher:
+    """Pick the best backend for the current platform."""
+    if sys.platform.startswith("linux"):
+        return SourceWatcher(
+            roots, on_change,
+            debounce_seconds=debounce_seconds,
+            min_spacing_seconds=min_spacing_seconds,
+            **kwargs,
+        )
+    return PollingWatcher(
+        roots, on_change,
+        debounce_seconds=debounce_seconds,
+        min_spacing_seconds=min_spacing_seconds,
+        poll_seconds=poll_seconds,
+    )
 
 
 def _nearest_existing_ancestor(path: Path) -> Path | None:

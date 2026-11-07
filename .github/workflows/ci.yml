@@ -7,10 +7,17 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
     strategy:
       matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ["3.10", "3.13"]
+        exclude:
+          # 控制规模：老 Python 只在 Linux 上验证
+          - os: windows-latest
+            python-version: "3.10"
+          - os: macos-latest
+            python-version: "3.10"
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -39,7 +46,60 @@ jobs:
           assert not missing, f"missing from wheel: {missing}"
           print(f"wheel contents OK ({len(names)} files)")
           PY
-      - name: Smoke test in a fresh venv
+      - name: Engine unit checks (portable)
+        run: |
+          python - <<'PY'
+          import os, sys, tempfile, time
+          from pathlib import Path
+          from agent_trail.watcher import create_watcher, PollingWatcher
+          from agent_trail.launcher import TerminalLauncher
+
+          # 轮询后端行为（三平台同一实现）
+          with tempfile.TemporaryDirectory() as tmp:
+              root = Path(tmp) / "src"
+              root.mkdir()
+              calls = []
+              w = PollingWatcher([(root, True)], lambda: calls.append(1),
+                                 poll_seconds=0.3, debounce_seconds=0.1,
+                                 min_spacing_seconds=0.2)
+              assert w.start(), w.last_error
+              (root / "a.jsonl").write_text("{}\n", encoding="utf-8")
+              deadline = time.time() + 5
+              while not calls and time.time() < deadline:
+                  time.sleep(0.05)
+              assert calls, "polling watcher did not fire"
+              w.stop()
+
+          # 平台后端选择
+          from agent_trail.watcher import SourceWatcher
+          if sys.platform.startswith("linux"):
+              assert isinstance(create_watcher([(Path(tmp) / "x", True)], lambda: None), SourceWatcher)
+          else:
+              assert isinstance(create_watcher([(Path(tmp) / "x", True)], lambda: None), PollingWatcher)
+
+          # 终端平台分发
+          if sys.platform == "win32":
+              assert TerminalLauncher._terminals_for_platform()[0][0] == "wt.exe"
+          else:
+              assert TerminalLauncher._terminals_for_platform()[0][0] == "x-terminal-emulator"
+
+          # Windows sqlite 只读 URI（在真 Windows runner 上执行）
+          if sys.platform == "win32":
+              import sqlite3
+              with tempfile.TemporaryDirectory() as tmp:
+                  db = Path(tmp) / "t.sqlite"
+                  conn = sqlite3.connect(str(db))
+                  conn.execute("CREATE TABLE t (id INTEGER)")
+                  conn.commit(); conn.close()
+                  ro = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)
+                  assert ro.execute("SELECT count(*) FROM t").fetchone()[0] == 0
+                  ro.close()
+                  print("windows sqlite ro URI OK")
+
+          print("engine unit checks OK on", sys.platform)
+          PY
+      - name: Smoke test in a fresh venv (POSIX)
+        if: runner.os != 'Windows'
         run: |
           python -m venv .smoke-venv
           .smoke-venv/bin/pip install --quiet dist/*.whl
@@ -47,3 +107,13 @@ jobs:
           .smoke-venv/bin/agent-trail --home "$HOME" --data-dir "$PWD/.smoke-data" scan | tail -2
           test -f "$PWD/.smoke-data/index.sqlite"
           echo "smoke OK"
+      - name: Smoke test in a fresh venv (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python -m venv .smoke-venv
+          .smoke-venv\Scripts\pip.exe install --quiet dist/*.whl
+          & .smoke-venv\Scripts\agent-trail.exe --help | Out-Null
+          & .smoke-venv\Scripts\agent-trail.exe --home "$HOME" --data-dir "$PWD\.smoke-data" scan | Select-Object -Last 2
+          if (-not (Test-Path "$PWD\.smoke-data\index.sqlite")) { throw "index.sqlite missing" }
+          Write-Output "smoke OK"

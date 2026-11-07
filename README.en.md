@@ -17,6 +17,17 @@ A local-first work memory for people who use multiple coding agents: it discover
 - **Honest degradation**: no native title → "Unnamed session"; unverified resume paths → no resume button. It never fakes capabilities
 - **i18n**: the console UI and tray menu ship in Simplified Chinese and English; the console follows your browser language (`?lang=en` / `?lang=zh-CN` to override), the tray follows `LANG` (`AGENT_TRAIL_LANG` overrides)
 
+## Platform support
+
+| Capability | Linux | Windows | macOS |
+| --- | --- | --- | --- |
+| scan / list / serve web console | ✅ | ✅ | ✅ |
+| Live change watching | inotify (seconds) | polling ≈5s | polling ≈5s |
+| System tray + embedded window | ✅ (native SNI + WebKit2GTK) | planned | planned |
+| Resume original session (verified tools) | ✅ | depends on each agent's CLI availability | same |
+
+Note: agent data paths follow the Linux layout (`~/.kimi-code`, etc. — `Path.home()` resolves everywhere). Actual directories on other platforms (e.g. opencode's XDG variants) still need real-machine verification; adapters that find no data honestly report "Not found".
+
 ## Supported agents
 
 | Agent | Timeline | Resume | Notes |

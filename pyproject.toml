@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "session-trail"
-version = "0.2.3"
+version = "0.3.0"
 description = "Local cross-agent work timeline: discover, browse and resume coding-agent sessions on your machine"
 readme = "README.md"
 license = "MIT"
@@ -19,6 +19,8 @@ classifiers = [
     "Environment :: X11 Applications",
     "Intended Audience :: Developers",
     "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",

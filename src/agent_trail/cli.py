@@ -46,6 +46,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.interval <= 0:
             parser.error("--interval must be positive")
     if args.command == "tray":
+        if sys.platform != "linux":
+            print("agent-trail tray is Linux-only for now "
+                  "(Windows/macOS backends are planned).")
+            return 1
         # 托盘是独立子进程形态，不需要打开本地索引；当前解释器缺 GI
         # 绑定时由 tray.main 内部重执行到带 gi 的系统 Python。
         from .tray.app import main as tray_main
