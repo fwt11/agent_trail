@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from contextlib import closing
 from datetime import datetime
@@ -18,7 +19,10 @@ class CodexAdapter(BaseAdapter):
 
     @property
     def root(self) -> Path:
-        return self.home / ".codex"
+        # 官方行为（源码 codex-rs/utils/home-dir）：CODEX_HOME 优先，否则
+        # dirs::home_dir()/.codex —— 全平台同布局（Windows = %USERPROFILE%/.codex）。
+        override = os.environ.get("CODEX_HOME")
+        return Path(override) if override else self.home / ".codex"
 
     @property
     def database_path(self) -> Path:

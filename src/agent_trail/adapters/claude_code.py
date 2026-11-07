@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -14,7 +15,11 @@ class ClaudeCodeAdapter(BaseAdapter):
 
     @property
     def root(self) -> Path:
-        return self.home / ".claude" / "projects"
+        # 官方行为：CLAUDE_CONFIG_DIR 重定向整个配置目录（含 projects/），
+        # Windows 默认 %USERPROFILE%/.claude —— Path.home() 全平台一致。
+        base = os.environ.get("CLAUDE_CONFIG_DIR")
+        root = Path(base) if base else self.home / ".claude"
+        return root / "projects"
 
     def discover(self) -> AdapterStatus:
         if not self.root.is_dir():

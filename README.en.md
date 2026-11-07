@@ -26,7 +26,7 @@ A local-first work memory for people who use multiple coding agents: it discover
 | System tray + embedded window | ✅ (native SNI + WebKit2GTK) | planned | planned |
 | Resume original session (verified tools) | ✅ | depends on each agent's CLI availability | same |
 
-Note: agent data paths follow the Linux layout (`~/.kimi-code`, etc. — `Path.home()` resolves everywhere). Actual directories on other platforms (e.g. opencode's XDG variants) still need real-machine verification; adapters that find no data honestly report "Not found".
+Data paths: Windows/macOS locations for the open-source CLIs are confirmed from their sources/docs — Codex (`dirs::home_dir()/.codex`, same layout everywhere), Claude Code (`%USERPROFILE%/.claude`), OpenCode (Windows = `%LOCALAPPDATA%/opencode`, macOS same as Linux), Pi (`~/.pi/agent` everywhere); the adapters also honor their official override vars (`CODEX_HOME` / `CLAUDE_CONFIG_DIR` / `OPENCODE_DATA`). Directories for the closed-source tools (Kimi/CodeBuddy/MiniMax/ZCode/DeepSeek) are unverified off Linux; adapters that find no data honestly report "Not found".
 
 ## Supported agents
 

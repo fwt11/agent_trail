@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import sys
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +21,18 @@ class OpenCodeAdapter(BaseAdapter):
 
     @property
     def root(self) -> Path:
+        # 平台差异（调研依据见 README 平台矩阵）：
+        # - Linux/macOS: ~/.local/share/opencode（官方 troubleshooting 文档确认
+        #   macOS 同 Linux，不走 Library/Application Support）
+        # - Windows: %LOCALAPPDATA%/opencode（XDG data home 在 Windows 解析为
+        #   %LOCALAPPDATA%）
+        # - 官方覆盖变量 OPENCODE_DATA 优先于以上全部
+        override = os.environ.get("OPENCODE_DATA")
+        if override:
+            return Path(override)
+        if sys.platform == "win32":
+            base = os.environ.get("LOCALAPPDATA") or self.home / "AppData" / "Local"
+            return Path(base) / "opencode"
         return self.home / ".local" / "share" / "opencode"
 
     @property

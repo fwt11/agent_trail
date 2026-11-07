@@ -27,7 +27,7 @@
 | 系统托盘 + 内嵌窗口 | ✅（原生 SNI + WebKit2GTK） | 规划中 | 规划中 |
 | 回到原会话（已验证工具） | ✅ | 取决于该 Agent 的 CLI 是否存在 | 同左 |
 
-说明：各 Agent 的会话数据路径按 Linux 布局实现（`~/.kimi-code` 等，`Path.home()` 在全平台生效）；部分工具在其他平台的实际目录（如 opencode 的 XDG 变体）尚待真机验证，未发现数据源的适配器会诚实显示"未发现"。
+数据目录路径：开源工具的 Windows/macOS 路径已按其源码/官方文档确认——Codex（`dirs::home_dir()/.codex`，全平台同布局）、Claude Code（`%USERPROFILE%/.claude`）、OpenCode（Windows = `%LOCALAPPDATA%/opencode`，macOS 同 Linux）、Pi（`~/.pi/agent` 全平台一致）；三者并尊重各自的官方覆盖变量（`CODEX_HOME` / `CLAUDE_CONFIG_DIR` / `OPENCODE_DATA`）。闭源工具（Kimi/CodeBuddy/MiniMax/ZCode/DeepSeek）其他平台的目录未验证，未发现数据源的适配器会诚实显示"未发现"。
 
 ## 支持的 Agent
 
