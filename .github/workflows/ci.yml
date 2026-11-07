@@ -46,6 +46,8 @@ jobs:
           assert not missing, f"missing from wheel: {missing}"
           print(f"wheel contents OK ({len(names)} files)")
           PY
+      - name: Install built wheel
+        run: python -m pip install --quiet dist/*.whl
       - name: Engine unit checks (portable)
         run: |
           python - <<'PY'
