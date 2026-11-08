@@ -15,6 +15,8 @@ class KimiCodeAdapter(BaseAdapter):
 
     @property
     def root(self) -> Path:
+        # Windows 已实测同布局（2026-11-08 用户机快照对比：session_index.jsonl
+        # 与 sessions/wm_*/session_*/state.json 均在 ~/.kimi-code 下）。
         return self.home / ".kimi-code"
 
     @property

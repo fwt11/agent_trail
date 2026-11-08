@@ -18,6 +18,8 @@ class MiniMaxCodeAdapter(BaseAdapter):
 
     @property
     def database_path(self) -> Path:
+        # Windows 已实测同布局（2026-11-08 用户机快照：runtime-state.sqlite-wal
+        # 在 ~/.minimax/v2/sqlite 下；另有 Linux 上没有的 v2/sessions/ 会话树）。
         return self.home / ".minimax" / "v2" / "sqlite" / "runtime-state.sqlite"
 
     def watch_roots(self) -> list[tuple[Path, bool]]:

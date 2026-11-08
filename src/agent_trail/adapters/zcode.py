@@ -17,6 +17,8 @@ class ZCodeAdapter(BaseAdapter):
 
     @property
     def cli_path(self) -> Path:
+        # Windows 已实测同布局（2026-11-08 用户机快照：.zcode/cli/db 与
+        # .zcode/v2 的 sqlite/-wal/-shm 写入与 Linux 完全一致）。
         return self.home / ".zcode" / "cli" / "db" / "db.sqlite"
 
     @property

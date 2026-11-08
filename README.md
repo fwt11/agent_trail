@@ -27,7 +27,7 @@
 | 系统托盘 + 内嵌窗口 | ✅（原生 SNI + WebKit2GTK） | 规划中 | 规划中 |
 | 回到原会话（已验证工具） | ✅ | 取决于该 Agent 的 CLI 是否存在 | 同左 |
 
-数据目录路径：开源工具的 Windows/macOS 路径已按其源码/官方文档确认——Codex（`dirs::home_dir()/.codex`，全平台同布局）、Claude Code（`%USERPROFILE%/.claude`）、OpenCode（Windows = `%LOCALAPPDATA%/opencode`，macOS 同 Linux）、Pi（`~/.pi/agent` 全平台一致）；三者并尊重各自的官方覆盖变量（`CODEX_HOME` / `CLAUDE_CONFIG_DIR` / `OPENCODE_DATA`）。闭源工具（Kimi/CodeBuddy/MiniMax/ZCode/DeepSeek）其他平台的目录未验证，未发现数据源的适配器会诚实显示"未发现"。
+数据目录路径：开源工具的 Windows/macOS 路径已按其源码/官方文档确认——Codex（`dirs::home_dir()/.codex`，全平台同布局）、Claude Code（`%USERPROFILE%/.claude`）、OpenCode（Windows = `%LOCALAPPDATA%/opencode`，macOS 同 Linux）、Pi（`~/.pi/agent` 全平台一致）；三者并尊重各自的官方覆盖变量（`CODEX_HOME` / `CLAUDE_CONFIG_DIR` / `OPENCODE_DATA`）。闭源五家已在真机 Windows 上用快照对比实测：Kimi Code、ZCode、MiniMax Code 的目录与 Linux 完全一致（适配器直接可用）；DeepSeek 在 Windows 是 desktop 版，仅 `.dsh/storages` 子集可用；CodeBuddy 的 Windows 产品（CodeBuddy CN）改用 `%LOCALAPPDATA%/CodeBuddyExtension/Data` 存储，暂不支持。
 
 ## 支持的 Agent
 

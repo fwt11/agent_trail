@@ -80,9 +80,21 @@ PRUNE_DIRS = {
 PRUNE_PREFIXES = ("microsoft",)  # AppData 下的 Microsoft 系统目录
 
 SESSION_EXTS = {".jsonl", ".sqlite", ".db", ".sqlite3", ".json", ".db-wal"}
-SNAPSHOT_LIMIT = 500_000  # 文件数安全上限
+SNAPSHOT_LIMIT = 1_000_000  # 文件数安全上限
 
-SCOPE_DIRS = [HOME, APPDATA, LOCALAPPDATA]
+# 去重：Windows 上 APPDATA/LOCALAPPDATA 在 HOME 内部，整个 HOME 遍历已覆盖；
+# 只有它们在 HOME 之外时才作为独立 scope（省 2/3 重复遍历——真实机器上
+# 用户目录动辄 50 万文件，重复遍历会撞上限导致漏测）。
+SCOPE_DIRS = [HOME]
+for _extra in (APPDATA, LOCALAPPDATA):
+    try:
+        if os.path.realpath(_extra).lower().startswith(
+            os.path.realpath(HOME).lower() + os.sep
+        ) or os.path.realpath(_extra).lower() == os.path.realpath(HOME).lower():
+            continue
+    except OSError:
+        continue
+    SCOPE_DIRS.append(_extra)
 
 
 def scope_key(path: Path) -> str:
@@ -204,10 +216,14 @@ def diff_report(before: dict, after: dict, out_path: Path) -> str:
         groups[group][kind] += 1
         exts[group][Path(key).suffix.lower() or "(无)"] += 1
 
-    ranked = sorted(
-        groups.items(),
-        key=lambda item: -(item[1]["new"] + item[1]["mod"]),
-    )
+    keywords = ("kimi", "codebuddy", "minimax", "zcode", "dsh", "deepseek", "mavis")
+    def rank(item):
+        group_lower = item[0].lower()
+        is_agent = any(k in group_lower for k in keywords)
+        total = item[1]["new"] + item[1]["mod"]
+        # 五家相关的组永远置顶（按总量），其余按数量排后
+        return (0 if is_agent else 1, -total if is_agent else total)
+    ranked = sorted(groups.items(), key=rank)
     for group, counter in ranked:
         total = counter["new"] + counter["mod"]
         ext_summary = ", ".join(f"{k}×{v}" for k, v in exts[group].most_common(6))
@@ -228,14 +244,15 @@ def diff_report(before: dict, after: dict, out_path: Path) -> str:
         lines.append(f"  {key}")
 
     lines.append("")
-    lines.append("=== 新增文件完整清单（JSON，供程序处理）===")
-    lines.append(json.dumps(
-        {"new": new_files, "modified": modified, "removed": removed},
-        ensure_ascii=False, indent=None,
-    ))
+    lines.append("（完整 JSON 清单已另存为同名 .json 文件）")
     report = "\n".join(lines)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(report, encoding="utf-8")
+    json_path = out_path.with_suffix(".json")
+    json_path.write_text(json.dumps(
+        {"new": new_files, "modified": modified, "removed": removed},
+        ensure_ascii=False,
+    ), encoding="utf-8")
     return report
 
 

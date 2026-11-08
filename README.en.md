@@ -26,7 +26,7 @@ A local-first work memory for people who use multiple coding agents: it discover
 | System tray + embedded window | ✅ (native SNI + WebKit2GTK) | planned | planned |
 | Resume original session (verified tools) | ✅ | depends on each agent's CLI availability | same |
 
-Data paths: Windows/macOS locations for the open-source CLIs are confirmed from their sources/docs — Codex (`dirs::home_dir()/.codex`, same layout everywhere), Claude Code (`%USERPROFILE%/.claude`), OpenCode (Windows = `%LOCALAPPDATA%/opencode`, macOS same as Linux), Pi (`~/.pi/agent` everywhere); the adapters also honor their official override vars (`CODEX_HOME` / `CLAUDE_CONFIG_DIR` / `OPENCODE_DATA`). Directories for the closed-source tools (Kimi/CodeBuddy/MiniMax/ZCode/DeepSeek) are unverified off Linux; adapters that find no data honestly report "Not found".
+Data paths: Windows/macOS locations for the open-source CLIs are confirmed from their sources/docs — Codex (`dirs::home_dir()/.codex`, same layout everywhere), Claude Code (`%USERPROFILE%/.claude`), OpenCode (Windows = `%LOCALAPPDATA%/opencode`, macOS same as Linux), Pi (`~/.pi/agent` everywhere); the adapters also honor their official override vars (`CODEX_HOME` / `CLAUDE_CONFIG_DIR` / `OPENCODE_DATA`). Closed-source tools were verified on a real Windows machine via snapshot diffing: Kimi Code, ZCode and MiniMax Code use the exact same layout as Linux (adapters work as-is); DeepSeek on Windows is a desktop product where only the `.dsh/storages` subset applies; CodeBuddy CN stores sessions under `%LOCALAPPDATA%/CodeBuddyExtension/Data` and is not supported yet.
 
 ## Supported agents
 
