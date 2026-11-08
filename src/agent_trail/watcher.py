@@ -61,6 +61,9 @@ class LibcInotify:
 
     def __init__(self) -> None:
         self.libc: ctypes.CDLL | None = None
+        if not sys.platform.startswith("linux"):
+            # dlopen(None) 是 POSIX 约定；Windows 上 CDLL(None) 直接 TypeError
+            return
         try:
             libc = ctypes.CDLL(None, use_errno=True)
             self.inotify_init1 = libc.inotify_init1
@@ -77,7 +80,7 @@ class LibcInotify:
             self.inotify_rm_watch.argtypes = [ctypes.c_int, ctypes.c_int]
             self.inotify_rm_watch.restype = ctypes.c_int
             self.libc = libc
-        except (OSError, AttributeError):
+        except (OSError, AttributeError, TypeError):
             self.libc = None
 
     @property

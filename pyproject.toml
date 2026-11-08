@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "session-trail"
-version = "0.3.1"
+version = "0.4.0"
 description = "Local cross-agent work timeline: discover, browse and resume coding-agent sessions on your machine"
 readme = "README.md"
 license = "MIT"
@@ -33,6 +33,10 @@ classifiers = [
 Homepage = "https://github.com/fwt11/agent_trail"
 Repository = "https://github.com/fwt11/agent_trail"
 Issues = "https://github.com/fwt11/agent_trail/issues"
+
+[project.optional-dependencies]
+# Linux 托盘用系统 GI（无需 extras）；Windows/macOS 托盘用这组
+tray = ["pystray>=0.19", "Pillow>=9.0", "pywebview>=5.0"]
 
 [project.scripts]
 agent-trail = "agent_trail.cli:main"

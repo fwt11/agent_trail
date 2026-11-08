@@ -15,7 +15,6 @@ TrayApp 是 GTK 胶水。Windows/macOS 后端（pystray + pywebview）预留为
 from __future__ import annotations
 
 import argparse
-import fcntl
 import json
 import os
 import re
@@ -28,6 +27,28 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+if os.name == "posix":
+    import fcntl
+
+
+def _lock_fd(fd: int) -> None:
+    """阻塞式位置锁的平台分派（单实例检测用，非阻塞尝试）。"""
+    if os.name == "posix":
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    else:
+        import msvcrt
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+
+
+def _unlock_fd(fd: int) -> None:
+    if os.name == "posix":
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    else:
+        import msvcrt
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
 
 def _detect_locale() -> str:
     override = os.environ.get("AGENT_TRAIL_LANG")
@@ -359,6 +380,24 @@ def autostart_enabled(target: Path = AUTOSTART_PATH) -> bool:
 def set_autostart(enabled: bool, executable: str, icon: Path,
                   target: Path = AUTOSTART_PATH,
                   template: Path = DESKTOP_TEMPLATE) -> None:
+    if sys.platform == "win32":
+        # Windows：写 HKCU Run 键（注册表自启），无 desktop 文件概念
+        import winreg
+        key_path = WINRUN_KEY
+        if enabled:
+            key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path)
+            winreg.SetValueEx(key, WINRUN_NAME, 0, winreg.REG_SZ,
+                              f'"{executable}" tray')
+            winreg.CloseKey(key)
+        else:
+            try:
+                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0,
+                                     winreg.KEY_SET_VALUE)
+                winreg.DeleteValue(key, WINRUN_NAME)
+                winreg.CloseKey(key)
+            except FileNotFoundError:
+                pass
+        return
     if enabled:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(render_desktop_entry(executable, icon, template), encoding="utf-8")
@@ -377,7 +416,7 @@ class SingleInstance:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
         try:
-            fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _lock_fd(self._fd)
         except (BlockingIOError, OSError):
             os.close(self._fd)
             self._fd = None
@@ -396,7 +435,7 @@ class SingleInstance:
     def release(self) -> None:
         if self._fd is not None:
             try:
-                fcntl.flock(self._fd, fcntl.LOCK_UN)
+                _unlock_fd(self._fd)
             except OSError:
                 pass
             os.close(self._fd)
@@ -560,6 +599,149 @@ def run_gtk(icon_path: Path, show: bool = False) -> int:
     return 0
 
 
+def run_web(icon_path: Path, show: bool = False) -> int:
+    """pystray（托盘）+ pywebview（内嵌窗口）后端（Windows/macOS）。"""
+    try:
+        import pystray
+        import webview
+        from PIL import Image
+    except ImportError as error:
+        print(
+            tr("error.tray_extra") + "\n"
+            '  pip install "session-trail[tray]"\n'
+            + tr("error.original", error=error),
+            file=sys.stderr,
+        )
+        return 1
+
+    icon_image = Image.open(icon_path)
+
+    class WebTrayApp:
+        """与 Linux 版 TrayApp 同一套菜单/行为契约，pystray + pywebview 实现。"""
+
+        def __init__(self) -> None:
+            self.core = TrailCore(on_event=self._on_core_event)
+            self.console_window = None
+            self.pending_open = show
+
+            self.icon = pystray.Icon(
+                "agent-trail",
+                icon_image,
+                tr("app.title"),
+                pystray.Menu(
+                    pystray.MenuItem(self._status_text, None, enabled=False),
+                    pystray.MenuItem(tr("menu.open"), self.open_console,
+                                     enabled=lambda *a: self.core.state == "running"),
+                    pystray.MenuItem(tr("menu.refresh"), self.refresh_now,
+                                     enabled=lambda *a: self.core.state == "running"),
+                    pystray.Menu.SEPARATOR,
+                    pystray.MenuItem(self._service_text, self.toggle_service,
+                                     enabled=lambda *a: self.core.available),
+                    pystray.MenuItem(tr("menu.autostart"), self.toggle_autostart,
+                                     checked=lambda *a: autostart_enabled()),
+                    pystray.Menu.SEPARATOR,
+                    pystray.MenuItem(tr("menu.quit"), self.quit),
+                ),
+            )
+
+        # -- pystray 动态文案（菜单打开时求值）--------------------------------
+        def _status_text(self, icon, item):
+            core = self.core
+            if not core.available:
+                return tr("status.no_agent")
+            if core.state == "running":
+                return tr("status.running", port=core.port)
+            if core.state == "starting":
+                return tr("status.starting")
+            if core.state == "crashed":
+                return tr("status.crashed", n=core.max_restarts)
+            return tr("status.stopped")
+
+        def _service_text(self, icon, item):
+            return tr("menu.stop") if self.core.process is not None else tr("menu.start")
+
+        # -- 动作 -------------------------------------------------------------
+        def open_console(self, *args):
+            if self.core.state == "running" and self.core.url:
+                self.show_window(self.core.url)
+            elif self.core.available:
+                self.pending_open = True
+                if self.core.state != "starting":
+                    self.core.start()
+
+        def show_window(self, url):
+            if self.console_window is None:
+                self.console_window = webview.create_window(
+                    tr("app.title"), url=url, width=1280, height=820)
+                self.console_window.events.closed += self._console_closed
+            else:
+                self.console_window.load_url(url)
+            self.console_window.show()
+
+        def _console_closed(self):
+            self.console_window = None
+
+        def toggle_service(self, *args):
+            if self.core.process is not None:
+                self.core.stop()
+            else:
+                self.core.start()
+
+        def toggle_autostart(self, *args):
+            set_autostart(not autostart_enabled(), self._agent_trail_bin(), icon_path)
+
+        def refresh_now(self, *args):
+            def worker():
+                self.core.refresh()
+                if self.core.state == "running" and self.console_window is not None:
+                    try:
+                        self.console_window.load_url(self.core.url)
+                    except Exception:
+                        pass
+            threading.Thread(target=worker, name="tray-refresh", daemon=True).start()
+
+        def quit(self, *args):
+            self.core.stop()
+            try:
+                self.icon.stop()
+            except Exception:
+                pass
+            for window in list(webview.windows):
+                try:
+                    window.destroy()
+                except Exception:
+                    pass
+            threading.Timer(2.0, lambda: os._exit(0)).start()  # 循环卡死的兜底
+
+        @staticmethod
+        def _agent_trail_bin() -> str:
+            return shutil.which("agent-trail") or sys.argv[0]
+
+        # -- 核心事件（子线程触发；pywebview 的窗口操作内部自带跨线程代理）------
+        def _on_core_event(self, event):
+            if event.get("event") != "running":
+                return
+            url = event["url"]
+            if self.pending_open:
+                self.pending_open = False
+                try:
+                    self.show_window(url)
+                except Exception:
+                    pass
+            elif self.console_window is not None:
+                try:
+                    self.console_window.load_url(url)
+                except Exception:
+                    pass
+
+    app = WebTrayApp()
+    app.core.start()  # 托盘启动即拉起服务
+    if show:
+        app.pending_open = True
+    webview.start()
+    return 0
+
+
 # -- 入口 --------------------------------------------------------------------
 
 
@@ -623,6 +805,11 @@ def _reexec_with_system_python(argv: list[str], guard: "SingleInstance | None" =
 
 
 def main(argv: list[str] | None = None) -> int:
+    # pythonw（无控制台）下 stdout/stderr 是 None，print 会炸——接到日志文件
+    if sys.stdout is None:
+        sys.stdout = open(LOG_PATH, "a", encoding="utf-8", errors="replace")
+    if sys.stderr is None:
+        sys.stderr = open(LOG_PATH, "a", encoding="utf-8", errors="replace")
     replay = list(argv) if argv is not None else sys.argv[1:]
     parser = argparse.ArgumentParser(prog="agent-trail tray", description=f"{tr('app.title')} tray")
     parser.add_argument("--install", action="store_true", help="写入应用菜单入口")
@@ -647,6 +834,22 @@ def main(argv: list[str] | None = None) -> int:
     if not ICON_PATH.is_file():
         print(tr("error.no_icon", path=ICON_PATH), file=sys.stderr)
         return 1
+    if sys.platform == "win32" and not args.foreground:
+        # Windows 后台运行：用 pythonw 重启自己（无控制台窗口），父进程立即退出
+        pre = SingleInstance()
+        if not pre.acquire():
+            print(tr("error.already_running"), flush=True)
+            return 0
+        pre.release()  # 锁让给 pythonw 子进程
+        pythonw = Path(sys.executable).with_name("pythonw.exe")
+        if pythonw.is_file():
+            DETACHED_PROCESS, CREATE_NO_WINDOW = 0x00000008, 0x08000000
+            subprocess.Popen(
+                [str(pythonw), "-m", "agent_trail", "tray", *replay, "--foreground"],
+                creationflags=DETACHED_PROCESS | CREATE_NO_WINDOW, close_fds=True,
+            )
+            return 0
+        # 没有 pythonw → 前台运行
     ensure_desktop_entry()
     # 锁在前台获取：重复启动时提示直接出现在用户终端；fd 由守护进程继承
     guard = SingleInstance()
@@ -656,16 +859,27 @@ def main(argv: list[str] | None = None) -> int:
     if not args.foreground and not _daemonize(LOG_PATH):
         return 0  # 父进程：立即把终端还给用户；托盘在后台继续
     guard.rewrite_pid()  # 锁文件写守护进程的 pid，kill $(cat 锁文件) 才有效
+    if sys.platform == "linux":
+        try:
+            return run_gtk(ICON_PATH, show=args.show)
+        except (ImportError, ValueError) as error:
+            code = _reexec_with_system_python(replay, guard)
+            if code is not None:
+                return code
+            print(
+                tr("error.no_gi") + "\n"
+                "  Debian/Ubuntu/deepin: sudo apt install python3-gi "
+                "gir1.2-webkit2-4.1\n"
+                + tr("error.original", error=error),
+                file=sys.stderr,
+            )
+            return 1
     try:
-        return run_gtk(ICON_PATH, show=args.show)
+        return run_web(ICON_PATH, show=args.show)
     except (ImportError, ValueError) as error:
-        code = _reexec_with_system_python(replay, guard)
-        if code is not None:
-            return code
         print(
-            tr("error.no_gi") + "\n"
-            "  Debian/Ubuntu/deepin: sudo apt install python3-gi "
-            "gir1.2-webkit2-4.1\n"
+            tr("error.tray_extra") + "\n"
+            "  pip install \"session-trail[tray]\"\n"
             + tr("error.original", error=error),
             file=sys.stderr,
         )

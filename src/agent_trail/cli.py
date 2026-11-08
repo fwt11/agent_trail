@@ -14,7 +14,7 @@ from .models import SessionFilter
 from .scanner import ScanService
 from .server import LocalServer
 from .store import LocalStore
-from .watcher import SourceWatcher
+from .watcher import PollingWatcher, create_watcher
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,7 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--no-browser", action="store_true")
     serve.add_argument("--interval", type=float, default=30)
     serve.add_argument("--no-watch", action="store_true")
-    tray = commands.add_parser("tray", help="system tray app (Linux)")
+    tray = commands.add_parser("tray", help="system tray app (Linux native; Windows/macOS via [tray] extra)")
     tray.add_argument("--show", action="store_true", help="open the console window at startup")
     tray.add_argument("--foreground", action="store_true", help="run in the foreground (default: detach with logs in ~/.agent-trail/tray.log)")
     tray.add_argument("--install", action="store_true", help="add an applications-menu entry")
@@ -86,24 +86,38 @@ def main(argv: list[str] | None = None) -> int:
             print(url, flush=True)
             if not args.no_browser:
                 webbrowser.open(url)
-            watcher: SourceWatcher | None = None
+            watcher = None
             if not args.no_watch:
                 roots: list[tuple[Path, bool]] = []
                 for adapter in adapters:
                     roots.extend(adapter.watch_roots())
-                watcher = SourceWatcher(roots, on_change=scanner.scan_all)
-                if watcher.start():
+                # 工厂按平台分发：Linux=inotify，Windows/macOS=轮询。
+                # 不要直接构造 SourceWatcher——它依赖 POSIX 的
+                # ctypes.CDLL(None)，在 Windows 上会 TypeError。
+                watcher = create_watcher(roots, on_change=scanner.scan_all)
+                if not watcher.start():
+                    # 首选后端不可用（如 Linux 上 inotify 被禁）：退到可移植
+                    # 的轮询后端，再失败才降级为纯 --interval 轮询。
+                    fallback = PollingWatcher(roots, on_change=scanner.scan_all)
+                    if fallback.start():
+                        watcher = fallback
+                if watcher is not None and watcher.healthy:
                     print(
                         json.dumps(
-                            {"event": "watch_started", "watches": watcher.watch_count},
+                            {
+                                "event": "watch_started",
+                                "kind": watcher.kind,
+                                "watches": watcher.watch_count,
+                            },
                             ensure_ascii=False,
                         ),
                         flush=True,
                     )
                 else:
+                    reason = watcher.last_error if watcher is not None else "unavailable"
                     print(
                         json.dumps(
-                            {"event": "watch_unavailable", "reason": watcher.last_error},
+                            {"event": "watch_unavailable", "reason": reason},
                             ensure_ascii=False,
                         ),
                         flush=True,

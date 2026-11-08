@@ -90,12 +90,17 @@ agent-trail tray --install   # manually add an applications-menu entry; --uninst
 
 The first `agent-trail tray` run after pip install automatically registers "Agent Trail" in the desktop applications menu (searchable from your launcher) and refreshes it on upgrades; headless sessions (SSH/servers) write nothing. Deepin's autostart launcher forces Python-script Exec entries through the system interpreter, so the entry is wrapped as `/bin/sh -c exec '<path>' tray` to keep the venv shebang working.
 
-The tray needs GTK GI bindings (preinstalled on most distros as the system Python). If the interpreter running agent-trail lacks them — e.g. the package lives in a venv — `agent-trail tray` automatically re-executes itself with a system Python that has GI; no manual steps. If none is found, install:
+Two backends:
+
+- **Linux**: native SNI + WebKit2GTK via system GI bindings. If the interpreter running agent-trail lacks them, the CLI re-executes with a system Python automatically; otherwise `sudo apt install python3-gi gir1.2-webkit2-4.1`
+- **Windows/macOS**: pystray + pywebview via an optional extra:
 
 ```bash
-# Debian/Ubuntu/deepin
-sudo apt install python3-gi gir1.2-webkit2-4.1
+pip install "session-trail[tray]"
+agent-trail tray          # detaches to the background (pythonw on Windows)
 ```
+
+Windows launch-at-login writes the HKCU Run registry key; background mode relaunches through pythonw. Note CodeBuddy's Windows product (CN desktop IDE) stores sessions elsewhere and is not supported as a source yet.
 
 `agent-trail tray` detaches from the terminal by default: the command returns immediately, logs append to `~/.agent-trail/tray.log`, and closing the terminal does not affect the tray; use `--foreground` to debug in the foreground. The tray manages `agent-trail serve` as a subprocess — **starting the tray starts the service** (stop/start from the menu; automatic restart with backoff if it dies). Closing the window only hides it; quit lives in the tray menu, or `kill $(cat ~/.agent-trail/tray.lock)`. A flock single-instance lock prevents duplicates (a second invocation prints "already running").
 

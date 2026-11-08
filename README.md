@@ -91,12 +91,17 @@ agent-trail tray --install   # 手动写入应用菜单入口；--uninstall 反�
 
 pip 安装后首次运行 `agent-trail tray` 会自动把"Agent 足迹"注册进系统应用菜单（应用启动器可直接搜索到）。Deepin 的自启动加载器会劫持指向 Python 脚本的 Exec 强制用系统解释器执行，故自启条目以 `/bin/sh -c exec` 包装规避"Agent 足迹"注册进系统应用菜单（应用启动器可直接搜索到），之后升级换路径也会自动刷新；无桌面会话（SSH/服务器）不写入。
 
-托盘壳本身不依赖任何第三方 pip 包，但需要 GTK 的 GI 绑定（系统 Python 通常自带）。`agent-trail tray` 在当前解释器缺 GI 绑定时会自动改用带绑定的系统 Python 重执行（例如 pip 装在 venv 里、托盘跑在系统 Python），无需任何手动操作；实在找不到时按提示安装：
+托盘分两个后端：
+
+- **Linux**：原生 SNI + WebKit2GTK（系统 Python 的 GI 绑定，无 pip 依赖）。当前解释器缺 GI 时自动重执行到系统 Python；缺绑定时 `sudo apt install python3-gi gir1.2-webkit2-4.1`
+- **Windows/macOS**：pystray + pywebview 实现，装可选依赖即可：
 
 ```bash
-# Debian/Ubuntu/deepin 系
-sudo apt install python3-gi gir1.2-webkit2-4.1
+pip install "session-trail[tray]"
+agent-trail tray          # 自动后台运行（Windows 经 pythonw 脱离终端）
 ```
+
+Windows 自启动写注册表 HKCU Run 键；后台运行经 pythonw 脱离终端。注意 Windows 上 CodeBuddy（CN 桌面版）的会话存储格式不同，暂不支持该来源。
 
 `agent-trail tray` 默认脱离终端后台运行：命令立即返回，日志追加在 `~/.agent-trail/tray.log`，关闭终端不影响托盘；`--foreground` 可前台运行调试。托盘以子进程方式管理 `agent-trail serve`——**启动托盘即自动拉起服务**（菜单里可停止/启动，异常退出自动重启）。窗口直接关闭只是隐藏，退出走托盘菜单，或 `kill $(cat ~/.agent-trail/tray.lock)`；flock 单实例锁防止重复启动（重复执行会提示"已在运行"）。
 
