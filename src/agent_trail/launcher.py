@@ -24,9 +24,11 @@ class TerminalLauncher:
     )
     # Linux 检测列表；Windows/macOS 见 _terminals_for_platform()。
     _terminals = (
+        # wezterm 不保证在 PATH 尾部，且 -e 与 `--` 不等价，故先于 x-terminal-emulator 探测。
+        ("wezterm", ("start", "--cwd", "{workdir}", "--")),
+        # 部分发行版把 x-terminal-emulator 指向包装脚本，不兼容 -e。
         ("x-terminal-emulator", ("-e",)),
         ("gnome-terminal", ("--",)),
-        ("wezterm", ("start", "--cwd", "{workdir}", "--")),
         ("konsole", ("-e",)),
         ("xfce4-terminal", ("-x",)),
         ("kitty", ("--",)),
