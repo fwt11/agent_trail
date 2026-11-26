@@ -2,15 +2,26 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from ..models import ActivitySession, AdapterStatus, ResumePlan, ScanResult
 from .base import BaseAdapter
 from .jsonl_utils import fingerprint_paths, read_jsonl_metadata, to_utc_iso
 
 
+def _latest_text(records: list[dict[str, Any]], record_type: str, field: str) -> str | None:
+    for record in reversed(records):
+        if record.get("type") != record_type:
+            continue
+        value = record.get(field)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 class CodeBuddyAdapter(BaseAdapter):
     source = "codebuddy"
-    adapter_version = 1
+    adapter_version = 2
 
     @property
     def projects_path(self) -> Path:
@@ -29,7 +40,11 @@ class CodeBuddyAdapter(BaseAdapter):
         discovery = self.discover()
         if discovery.kind == "unavailable":
             return ScanResult(discovery, None, [], True)
-        paths = list(self.projects_path.glob("**/*.jsonl"))
+        paths = [
+            path
+            for path in self.projects_path.glob("**/*.jsonl")
+            if "subagents" not in path.relative_to(self.projects_path).parts
+        ]
         fingerprint = fingerprint_paths(paths, self.adapter_version)
         if fingerprint == previous_fingerprint:
             return ScanResult(
@@ -41,7 +56,9 @@ class CodeBuddyAdapter(BaseAdapter):
         sessions: list[ActivitySession] = []
         error_count = 0
         for path in paths:
-            result = read_jsonl_metadata(path, {"sessionId", "cwd", "timestamp"})
+            result = read_jsonl_metadata(
+                path, {"sessionId", "cwd", "timestamp", "type", "aiTitle", "summary"}
+            )
             error_count += result.error_count
             records = [item for item in result.records if item.get("timestamp") is not None]
             if not records:
@@ -52,14 +69,17 @@ class CodeBuddyAdapter(BaseAdapter):
                 error_count += 1
                 continue
             session_id = str(records[0].get("sessionId") or path.stem)
+            title = _latest_text(result.records, "ai-title", "aiTitle") or _latest_text(
+                result.records, "summary", "summary"
+            )
             timestamps = [float(item["timestamp"]) for item in records]
             sessions.append(
                 ActivitySession(
                     source=self.source,
                     session_id=session_id,
                     workdir=workdir,
-                    title=None,
-                    title_source="fallback",
+                    title=title,
+                    title_source="native" if title else "fallback",
                     created_at=to_utc_iso(min(timestamps)),
                     updated_at=to_utc_iso(max(timestamps)),
                     source_locator=str(path),
