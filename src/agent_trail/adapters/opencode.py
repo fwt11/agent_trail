@@ -9,8 +9,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ..models import ActivitySession, AdapterStatus, ResumePlan, ScanResult
+from ..models import (
+    ActivitySession,
+    AdapterStatus,
+    ChatSupport,
+    ConversationContent,
+    ConversationMessage,
+    ResumePlan,
+    ScanResult,
+)
 from .base import BaseAdapter
+from .chat_parsers import _opencode_chat_backend
 from .jsonl_utils import fingerprint_paths, to_utc_iso
 from .sqlite_utils import connect_readonly
 
@@ -181,3 +190,137 @@ class OpenCodeAdapter(BaseAdapter):
             args=("--session", session.resume_ref),
             workdir=session.workdir,
         )
+
+    def read_messages(self, session: ActivitySession) -> ConversationContent | None:
+        # 正文两种载体（真机 2026-11 确认）：
+        # - DB 会话（locator=opencode.db）：message/part 表，data 列是 JSON，
+        #   形状与 storage 下的 JSON 文件一致
+        # - legacy 会话（locator=storage/session/*.json）：storage/message/
+        #   <sid>/msg_*.json + storage/part/<mid>/prt_*.json
+        locator = session.source_locator
+        if not locator:
+            return None
+        try:
+            path = Path(locator)
+        except (OSError, ValueError):
+            return None
+        if path == self.database_path and path.is_file():
+            return self._messages_from_database(session.session_id)
+        return self._messages_from_storage(session.session_id)
+
+    def _messages_from_database(self, session_id: str) -> ConversationContent | None:
+        try:
+            with closing(connect_readonly(self.database_path)) as connection:
+                rows = connection.execute(
+                    "SELECT id, time_created, data FROM message "
+                    "WHERE session_id=? ORDER BY time_created",
+                    (session_id,),
+                ).fetchall()
+                part_rows = connection.execute(
+                    "SELECT message_id, data FROM part WHERE session_id=? ORDER BY time_created",
+                    (session_id,),
+                ).fetchall()
+        except sqlite3.Error:
+            return None
+        parts: dict[str, list[str]] = {}
+        for message_id, raw in part_rows:
+            payload = self._load_json(raw)
+            if payload is None:
+                continue
+            text = self._part_text(payload)
+            if text:
+                parts.setdefault(str(message_id), []).append(text)
+        parsed_rows: list[tuple] = []
+        for message_id, created, raw in rows:
+            payload = self._load_json(raw)
+            if payload is None:
+                continue
+            parsed_rows.append((str(message_id), created, payload))
+        return self._assemble(parsed_rows, parts, lambda row: to_utc_iso(row[1]))
+
+    def _messages_from_storage(self, session_id: str) -> ConversationContent | None:
+        message_dir = self.root / "storage" / "message" / session_id
+        if not message_dir.is_dir():
+            return None
+        entries: list[tuple[str, int, dict]] = []
+        for path in message_dir.glob("*.json"):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            times = payload.get("time")
+            created = times.get("created") if isinstance(times, dict) else None
+            entries.append((path.name, int(created) if isinstance(created, (int, float)) else 0, payload))
+        entries.sort(key=lambda item: (item[1], item[0]))
+        part_root = self.root / "storage" / "part"
+        parts: dict[str, list[str]] = {}
+        for name, _created, payload in entries:
+            message_id = str(payload.get("id") or name)
+            texts: list[str] = []
+            for path in sorted(part_root.joinpath(message_id).glob("*.json")):
+                try:
+                    blob = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(blob, dict):
+                    continue
+                text = self._part_text(blob)
+                if text:
+                    texts.append(text)
+            if texts:
+                parts[message_id] = texts
+        rows = [
+            (str(payload.get("id") or name), created, payload)
+            for name, created, payload in entries
+        ]
+        return self._assemble(rows, parts, lambda row: to_utc_iso(row[1]))
+
+    def _assemble(
+        self,
+        rows: list[tuple],
+        parts: dict[str, list[str]],
+        stamp_of,
+    ) -> ConversationContent:
+        messages: list[ConversationMessage] = []
+        for message_id, _created, payload in rows:
+            role = payload.get("role")
+            if role not in ("user", "assistant"):
+                continue
+            text = "\n".join(parts.get(str(message_id), []))
+            if not text:
+                continue
+            messages.append(
+                ConversationMessage(
+                    role=role,
+                    text=text,
+                    timestamp=stamp_of((message_id, _created, payload)),
+                )
+            )
+        return ConversationContent(messages=messages, truncated=False)
+
+    @staticmethod
+    def _load_json(raw: object) -> dict | None:
+        if isinstance(raw, dict):
+            return raw
+        if not isinstance(raw, str):
+            return None
+        try:
+            payload = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    @staticmethod
+    def _part_text(payload: dict) -> str:
+        # synthetic 部件是 CLI 注入的系统文本（提醒/指令），不属于对话正文。
+        if payload.get("type") != "text" or payload.get("synthetic"):
+            return ""
+        text = payload.get("text")
+        return text if isinstance(text, str) and text.strip() else ""
+
+    def chat_support(self) -> ChatSupport | None:
+        # `opencode run` 是官方无头模式（见 chat_parsers）；argv 传 prompt，
+        # 封在 Windows 安全值。
+        return ChatSupport(executable="opencode", max_prompt_chars=8000)

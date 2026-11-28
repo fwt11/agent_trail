@@ -6,10 +6,23 @@ from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
-from ..models import ActivitySession, AdapterStatus, ResumePlan, ScanResult
+from ..models import (
+    ActivitySession,
+    AdapterStatus,
+    ConversationContent,
+    ConversationMessage,
+    ResumePlan,
+    ScanResult,
+)
 from .base import BaseAdapter
 from .jsonl_utils import fingerprint_paths, to_utc_iso
 from .sqlite_utils import connect_readonly
+
+# 真机 2026-11 确认的 local_runtime_message_rows 语义：
+# - msg_type==1 是回合的最终展示消息（mt2 是逐步中间消息，量极大且重复）
+# - source='api' 是真实用户/助手消息；'background-task' 是后台任务通知
+#   （user 角色，保留可读）；questionnaire/thread-goal 等是系统噪声
+_MESSAGE_SOURCES = ("api", "background-task")
 
 
 class MiniMaxCodeAdapter(BaseAdapter):
@@ -152,3 +165,46 @@ class MiniMaxCodeAdapter(BaseAdapter):
             args=("--session", session.resume_ref),
             workdir=session.workdir,
         )
+
+    def read_messages(self, session: ActivitySession) -> ConversationContent | None:
+        locator = session.source_locator
+        if not locator:
+            return None
+        try:
+            path = Path(locator)
+        except (OSError, ValueError):
+            return None
+        if not path.is_file():
+            return None
+        try:
+            with closing(connect_readonly(path)) as connection:
+                rows = connection.execute(
+                    "SELECT role, source, created_at_ms, data_json "
+                    "FROM local_runtime_message_rows WHERE session_id=? ORDER BY id",
+                    (session.session_id,),
+                ).fetchall()
+        except sqlite3.Error:
+            return None
+        messages: list[ConversationMessage] = []
+        for role, source, created_ms, raw in rows:
+            if role not in ("user", "assistant") or source not in _MESSAGE_SOURCES:
+                continue
+            if not isinstance(raw, str):
+                continue
+            try:
+                payload = json.loads(raw)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if not isinstance(payload, dict) or payload.get("msg_type") != 1:
+                continue
+            text = payload.get("msg_content")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            messages.append(
+                ConversationMessage(
+                    role=role,
+                    text=text,
+                    timestamp=to_utc_iso(created_ms) if isinstance(created_ms, (int, float)) else None,
+                )
+            )
+        return ConversationContent(messages=messages, truncated=False)

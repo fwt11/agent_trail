@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import threading
 import webbrowser
@@ -10,11 +11,17 @@ from pathlib import Path
 from time import monotonic
 
 from .adapters import default_adapters
+from .chat import ChatManager
+from .content import ContentIndexer
 from .models import SessionFilter
 from .scanner import ScanService
 from .server import LocalServer
 from .store import LocalStore
 from .watcher import PollingWatcher, create_watcher
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,6 +36,12 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--no-browser", action="store_true")
     serve.add_argument("--interval", type=float, default=30)
     serve.add_argument("--no-watch", action="store_true")
+    serve.add_argument(
+        "--no-content-index",
+        action="store_true",
+        help="disable local message-body indexing (privacy-first mode; "
+        "in-app search and session message views stay off, chat still works)",
+    )
     tray = commands.add_parser("tray", help="system tray app (Linux native; Windows/macOS via [tray] extra)")
     tray.add_argument("--show", action="store_true", help="open the console window at startup")
     tray.add_argument("--foreground", action="store_true", help="run in the foreground (default: detach with logs in ~/.agent-trail/tray.log)")
@@ -81,7 +94,12 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "serve":
             scanner = ScanService(store, adapters)
             scanner.scan_all()
-            server = LocalServer(store, scanner, port=args.port)
+            content_enabled = not args.no_content_index and not _env_flag("AGENT_TRAIL_NO_CONTENT")
+            indexer = ContentIndexer(store, adapters) if content_enabled else None
+            if indexer is not None:
+                indexer.index_due()
+            chat = ChatManager(store, adapters)
+            server = LocalServer(store, scanner, port=args.port, indexer=indexer, chat=chat)
             url = server.start()
             print(url, flush=True)
             if not args.no_browser:
@@ -131,11 +149,16 @@ def main(argv: list[str] | None = None) -> int:
                     return max(args.interval, 300.0)
                 return args.interval
 
+            def after_scan() -> None:
+                if watcher is not None:
+                    watcher.resync()
+                if indexer is not None:
+                    indexer.index_due()
+
             scheduler = threading.Thread(
                 target=scanner.run_forever,
                 args=(args.interval,),
-                kwargs={"effective_interval": poll_interval,
-                        "after_scan": watcher.resync if watcher is not None else None},
+                kwargs={"effective_interval": poll_interval, "after_scan": after_scan},
                 name="agent-trail-scan",
                 daemon=True,
             )

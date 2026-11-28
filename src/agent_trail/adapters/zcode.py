@@ -1,14 +1,38 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
-from ..models import ActivitySession, AdapterStatus, ResumePlan, ScanResult
+from ..models import (
+    ActivitySession,
+    AdapterStatus,
+    ConversationContent,
+    ConversationMessage,
+    ResumePlan,
+    ScanResult,
+)
 from .base import BaseAdapter
 from .jsonl_utils import fingerprint_paths, to_utc_iso
 from .sqlite_utils import connect_readonly
+
+
+def _part_texts(raw: str) -> list[str]:
+    """part.data JSON 里 type=='text' 的正文；其他类型（工具/思考）跳过。"""
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return []
+    if not isinstance(payload, dict) or payload.get("type") != "text":
+        return []
+    text = payload.get("text")
+    return [text] if isinstance(text, str) and text.strip() else []
+
+
+def _is_injected_user_text(text: str) -> bool:
+    return text.startswith(("<system-reminder>", "<task-notification", "<environment_context>"))
 
 
 class ZCodeAdapter(BaseAdapter):
@@ -161,3 +185,68 @@ class ZCodeAdapter(BaseAdapter):
             workdir=session.workdir,
             reason="ZCode resume route is not verified",
         )
+
+    def read_messages(self, session: ActivitySession) -> ConversationContent | None:
+        # 正文在 CLI 数据库的 message/part 表（真机 2026-11 确认）：
+        # message.data = {role, time:{created:ms}, synthetic?, visibility?}，
+        # part.data = {type:"text", text}，按 sequence 排序拼接。
+        # 任务索引库没有这两张表，查询报错后诚实返回 None。synthetic 与
+        # visibility=="model-only" 的行是系统注入，跳过。
+        locator = session.source_locator
+        if not locator:
+            return None
+        try:
+            path = Path(locator)
+        except (OSError, ValueError):
+            return None
+        if not path.is_file():
+            return None
+        try:
+            with closing(connect_readonly(path)) as connection:
+                message_rows = connection.execute(
+                    "SELECT id, time_created, data FROM message WHERE session_id=? "
+                    "ORDER BY sequence",
+                    (session.session_id,),
+                ).fetchall()
+                part_rows = connection.execute(
+                    "SELECT message_id, data FROM part WHERE session_id=? ORDER BY sequence",
+                    (session.session_id,),
+                ).fetchall()
+        except sqlite3.Error:
+            return None
+        parts: dict[str, list[str]] = {}
+        for message_id, raw in part_rows:
+            texts = _part_texts(raw) if isinstance(raw, str) else []
+            if texts:
+                parts.setdefault(str(message_id), []).extend(texts)
+        messages: list[ConversationMessage] = []
+        for message_id, time_created, raw in message_rows:
+            if not isinstance(raw, str):
+                continue
+            try:
+                payload = json.loads(raw)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            role = payload.get("role")
+            if role not in ("user", "assistant"):
+                continue
+            if payload.get("synthetic") or payload.get("visibility") == "model-only":
+                continue
+            text = "\n".join(parts.get(str(message_id), []))
+            if not text:
+                continue
+            if role == "user" and _is_injected_user_text(text):
+                continue
+            times = payload.get("time")
+            created = times.get("created") if isinstance(times, dict) else None
+            stamp = created if isinstance(created, (int, float)) else time_created
+            messages.append(
+                ConversationMessage(
+                    role=role,
+                    text=text,
+                    timestamp=to_utc_iso(stamp) if isinstance(stamp, (int, float)) else None,
+                )
+            )
+        return ConversationContent(messages=messages, truncated=False)

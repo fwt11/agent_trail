@@ -7,6 +7,7 @@ from typing import Literal
 TitleSource = Literal["native", "fallback", "missing"]
 ResumeKind = Literal["cli", "deep_link", "none"]
 AdapterStatusKind = Literal["ok", "unavailable", "experimental", "error", "incompatible"]
+MessageRole = Literal["user", "assistant", "system", "tool"]
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,72 @@ class SessionFilter:
     query: str | None = None
     limit: int = 200
     offset: int = 0
+
+
+@dataclass(frozen=True)
+class ConversationMessage:
+    """一条会话消息的正文（惰性从源文件读取，默认只驻留内存/本地索引）。"""
+
+    role: MessageRole
+    text: str
+    timestamp: str | None = None
+    kind: str = "text"
+
+    def __post_init__(self) -> None:
+        if self.role not in {"user", "assistant", "system", "tool"}:
+            raise ValueError("invalid message role")
+
+
+@dataclass(frozen=True)
+class ConversationContent:
+    messages: list[ConversationMessage] = field(default_factory=list)
+    truncated: bool = False
+
+
+@dataclass(frozen=True)
+class ChatSupport:
+    """适配器声明其 CLI 可被无头模式驱动（应用内聊天）的最小描述。"""
+
+    executable: str
+    max_prompt_chars: int = 8000
+
+
+@dataclass(frozen=True)
+class ChatEvent:
+    """聊天子进程 stdout 的一步推进；done/error 为终止事件。"""
+
+    type: Literal["text", "tool", "done", "error"]
+    text: str = ""
+    session_ref: str | None = None
+
+
+@dataclass(frozen=True)
+class ChatThread:
+    id: str
+    source: str
+    title: str
+    workdir: str
+    created_at: str
+    updated_at: str
+    session_ref: str | None = None
+
+
+@dataclass(frozen=True)
+class ChatMessage:
+    id: int
+    thread_id: str
+    role: MessageRole
+    text: str
+    created_at: str
+
+
+@dataclass(frozen=True)
+class SearchHit:
+    source: str
+    session_id: str
+    seq: int
+    role: MessageRole
+    snippet: str
 
 
 def _normalize_path(value: str) -> str:

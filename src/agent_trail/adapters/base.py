@@ -4,7 +4,14 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
 
-from ..models import ActivitySession, AdapterStatus, ResumePlan, ScanResult
+from ..models import (
+    ActivitySession,
+    AdapterStatus,
+    ChatSupport,
+    ConversationContent,
+    ResumePlan,
+    ScanResult,
+)
 
 
 class BaseAdapter(ABC):
@@ -37,3 +44,19 @@ class BaseAdapter(ABC):
     @abstractmethod
     def resume_plan(self, session: ActivitySession) -> ResumePlan:
         raise NotImplementedError
+
+    def read_messages(self, session: ActivitySession) -> ConversationContent | None:
+        """按需解析会话消息正文；不支持内容查看的适配器返回 None。
+
+        这是可选能力（元数据优先原则的受控放宽）：正文只进本地控制台展示
+        与本机索引，绝不外传；源文件仍然只读。解析必须防御式——任何单条
+        解析失败都跳过而不是让整个调用失败。
+        """
+        return None
+
+    def chat_support(self) -> ChatSupport | None:
+        """声明本适配器的 CLI 可被无头模式驱动（应用内聊天）。
+
+        返回 None 表示不支持：控制台对该来源只提供"跳回终端"。
+        """
+        return None

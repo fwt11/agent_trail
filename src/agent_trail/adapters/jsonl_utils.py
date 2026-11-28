@@ -33,6 +33,26 @@ def read_jsonl_metadata(path: Path, allowed_fields: set[str]) -> JsonlReadResult
     return JsonlReadResult(records=records, error_count=error_count)
 
 
+def read_jsonl_records(path: Path) -> JsonlReadResult:
+    """完整解析 JSONL（不裁剪字段），供消息正文等只读深读取使用。"""
+    records: list[dict[str, Any]] = []
+    error_count = 0
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                value = json.loads(line)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                error_count += 1
+                continue
+            if not isinstance(value, dict):
+                error_count += 1
+                continue
+            records.append(value)
+    return JsonlReadResult(records=records, error_count=error_count)
+
+
 def to_utc_iso(value: Any) -> str:
     if isinstance(value, str):
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))

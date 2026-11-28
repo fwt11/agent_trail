@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "session-trail"
-version = "0.3.3"
-description = "Local cross-agent work timeline: discover, browse and resume coding-agent sessions on your machine"
+version = "0.5.0"
+description = "Local agent workbench: a cross-agent session timeline plus in-app chat with your coding agents, all local-first"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "fwt11" }]
 requires-python = ">=3.10"
 dependencies = []
-keywords = ["ai-agents", "coding-agent", "timeline", "session-management", "local-first", "tray", "systray"]
+keywords = ["ai-agents", "coding-agent", "timeline", "session-management", "local-first", "tray", "systray", "chat", "workbench"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Web Environment",

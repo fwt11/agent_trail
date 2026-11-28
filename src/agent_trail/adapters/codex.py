@@ -7,10 +7,35 @@ from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
-from ..models import ActivitySession, AdapterStatus, ResumePlan, ScanResult
+from ..models import (
+    ActivitySession,
+    AdapterStatus,
+    ChatSupport,
+    ConversationContent,
+    ConversationMessage,
+    ResumePlan,
+    ScanResult,
+)
 from .base import BaseAdapter
-from .jsonl_utils import fingerprint_paths, to_utc_iso
+from .chat_parsers import _codex_chat_backend
+from .jsonl_utils import fingerprint_paths, read_jsonl_records, to_utc_iso
 from .sqlite_utils import connect_readonly
+
+
+def _rollout_text(content: object) -> str:
+    """拼接 rollout content 数组里的文本块（input_text/output_text/text）。"""
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") not in ("input_text", "output_text", "text"):
+            continue
+        text = block.get("text")
+        if isinstance(text, str) and text:
+            parts.append(text)
+    return "\n".join(parts)
 
 
 class CodexAdapter(BaseAdapter):
@@ -167,3 +192,59 @@ class CodexAdapter(BaseAdapter):
             workdir=session.workdir,
             reason="Codex requires an unverified directory-trust decision",
         )
+
+    def read_messages(self, session: ActivitySession) -> ConversationContent | None:
+        # 正文就是 rollout JSONL（DB 的 rollout_path 指向它）：取
+        # response_item 且 payload.type=="message" 的 user/assistant 项。
+        # developer/system 项与 <user_instructions>/<environment_context>
+        # 这类注入文本跳过，避免污染时间线与全文检索。
+        rollout = self._rollout_path(session)
+        if rollout is None:
+            return None
+        try:
+            parsed = read_jsonl_records(rollout)
+        except OSError:
+            return None
+        messages: list[ConversationMessage] = []
+        for record in parsed.records:
+            if record.get("type") != "response_item":
+                continue
+            payload = record.get("payload")
+            if not isinstance(payload, dict) or payload.get("type") != "message":
+                continue
+            role = payload.get("role")
+            if role not in ("user", "assistant"):
+                continue
+            text = _rollout_text(payload.get("content"))
+            if not text:
+                continue
+            if role == "user" and text.startswith(
+                ("<user_instructions>", "<environment_context>", "<permissions")
+            ):
+                continue
+            timestamp = record.get("timestamp")
+            messages.append(
+                ConversationMessage(
+                    role=role,
+                    text=text,
+                    timestamp=to_utc_iso(timestamp)
+                    if isinstance(timestamp, (int, float, str))
+                    else None,
+                )
+            )
+        return ConversationContent(messages=messages, truncated=False)
+
+    def _rollout_path(self, session: ActivitySession) -> Path | None:
+        locator = session.source_locator
+        if not locator:
+            return None
+        try:
+            path = Path(locator)
+        except (OSError, ValueError):
+            return None
+        return path if path.is_file() else None
+
+    def chat_support(self) -> ChatSupport | None:
+        # `codex exec` 是官方无头模式（见 chat_parsers），argv 传 prompt
+        # 有命令行长度上限，封在 Windows 安全值。
+        return ChatSupport(executable="codex", max_prompt_chars=8000)

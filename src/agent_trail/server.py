@@ -8,13 +8,20 @@ from dataclasses import asdict
 from datetime import datetime, time, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlsplit
 
+from .chat import ChatError
 from .launcher import TerminalLauncher
 from .models import SessionFilter
 from .scanner import ScanService
 from .store import LocalStore
+
+if TYPE_CHECKING:
+    from .chat import ChatManager
+    from .content import ContentIndexer
+
+CHAT_BODY_MAX = 65536
 
 
 class LocalServer:
@@ -24,10 +31,14 @@ class LocalServer:
         scanner: ScanService,
         port: int = 0,
         launcher: TerminalLauncher | None = None,
+        indexer: ContentIndexer | None = None,
+        chat: ChatManager | None = None,
     ) -> None:
         self.store = store
         self.scanner = scanner
         self.launcher = launcher or TerminalLauncher()
+        self.indexer = indexer
+        self.chat = chat
         self.key = secrets.token_urlsafe(32)
         self._httpd = ThreadingHTTPServer(("127.0.0.1", port), _RequestHandler)
         self._httpd.app = self
@@ -96,7 +107,108 @@ class LocalServer:
             "sources": statuses,
             "last_scanned_at": max(scanned) if scanned else None,
             "session_count": len(sessions),
+            "content_enabled": self.indexer is not None,
+            "fts_available": self.store.fts_available,
+            "chat_enabled": self.chat is not None,
         }
+
+    def _session_messages(self, query: dict[str, list[str]]) -> dict[str, Any]:
+        source = self._one(query, "source")
+        session_id = self._one(query, "session_id")
+        if not source or not session_id:
+            raise ValueError("invalid session reference")
+        if self.indexer is None:
+            return {"status": "disabled"}
+        return self.indexer.session_payload(source, session_id)
+
+    def _search(self, query: dict[str, list[str]]) -> dict[str, Any]:
+        if self.indexer is None:
+            return {"available": False, "fts": False, "hits": []}
+        text = self._one(query, "q") or ""
+        limit = self._integer(query, "limit", 30, 1, 100)
+        hits = self.store.search_content(text, limit)
+        records = []
+        for hit in hits:
+            session = self.store.get_session(hit.source, hit.session_id)
+            records.append(
+                {
+                    "source": hit.source,
+                    "session_id": hit.session_id,
+                    "seq": hit.seq,
+                    "role": hit.role,
+                    "snippet": hit.snippet,
+                    "session_title": session.title if session is not None else None,
+                    "workdir": session.workdir if session is not None else None,
+                    "updated_at": session.updated_at if session is not None else None,
+                }
+            )
+        return {"available": True, "fts": self.store.fts_available, "hits": records}
+
+    def _chat_capabilities(self) -> dict[str, Any]:
+        return {"agents": self.chat.capabilities() if self.chat is not None else []}
+
+    def _chat_threads(self) -> dict[str, Any]:
+        return {"threads": [asdict(thread) for thread in self.store.list_threads()]}
+
+    def _chat_thread(self, query: dict[str, list[str]]) -> dict[str, Any]:
+        thread_id = self._one(query, "id")
+        if not thread_id or len(thread_id) > 128:
+            raise ValueError("invalid thread reference")
+        thread = self.store.get_thread(thread_id)
+        if thread is None:
+            raise ValueError("thread not found")
+        return {
+            "thread": asdict(thread),
+            "messages": [asdict(message) for message in self.store.thread_messages(thread_id)],
+        }
+
+    def _chat_new(self, payload: Any) -> tuple[int, dict[str, Any]]:
+        if self.chat is None:
+            return 409, {"status": "unavailable", "message": "chat disabled"}
+        if not isinstance(payload, dict):
+            raise ValueError("invalid request")
+        source = payload.get("source")
+        if not isinstance(source, str) or not source or len(source) > 100:
+            raise ValueError("invalid source")
+        workdir = payload.get("workdir")
+        title = payload.get("title")
+        if workdir is not None and (not isinstance(workdir, str) or len(workdir) > 1000):
+            raise ValueError("invalid workdir")
+        if title is not None and (not isinstance(title, str) or len(title) > 200):
+            raise ValueError("invalid title")
+        try:
+            thread = self.chat.create_thread(source, workdir, title)
+        except ChatError as error:
+            return 409, {"status": "unavailable", "message": str(error)}
+        return 200, {"thread": asdict(thread)}
+
+    def _chat_send(self, payload: Any) -> tuple[int, dict[str, Any]]:
+        if self.chat is None:
+            return 409, {"status": "unavailable", "message": "chat disabled"}
+        if not isinstance(payload, dict):
+            raise ValueError("invalid request")
+        thread_id = payload.get("thread_id")
+        prompt = payload.get("prompt")
+        if not isinstance(thread_id, str) or not thread_id or len(thread_id) > 128:
+            raise ValueError("invalid thread reference")
+        if not isinstance(prompt, str) or not prompt or len(prompt) > CHAT_BODY_MAX:
+            raise ValueError("invalid prompt")
+        try:
+            task_id = self.chat.start_turn(thread_id, prompt)
+        except ChatError as error:
+            return 409, {"status": "unavailable", "message": str(error)}
+        return 200, {"task_id": task_id}
+
+    def _chat_cancel(self, payload: Any) -> tuple[int, dict[str, Any]]:
+        if self.chat is None:
+            return 409, {"status": "unavailable", "message": "chat disabled"}
+        if not isinstance(payload, dict):
+            raise ValueError("invalid request")
+        task_id = payload.get("task_id")
+        if not isinstance(task_id, str) or not task_id or len(task_id) > 128:
+            raise ValueError("invalid task reference")
+        cancelled = self.chat.cancel(task_id)
+        return 200, {"status": "cancelled" if cancelled else "unknown_task"}
 
     def _resume(self, payload: Any) -> tuple[int, dict[str, Any]]:
         if not isinstance(payload, dict):
@@ -181,6 +293,18 @@ class _RequestHandler(BaseHTTPRequestHandler):
                 self._json(200, self.app._sessions(parse_qs(urlsplit(self.path).query)))
             elif path == "/api/status":
                 self._json(200, self.app._status())
+            elif path == "/api/session/messages":
+                self._json(200, self.app._session_messages(parse_qs(urlsplit(self.path).query)))
+            elif path == "/api/search":
+                self._json(200, self.app._search(parse_qs(urlsplit(self.path).query)))
+            elif path == "/api/chat/capabilities":
+                self._json(200, self.app._chat_capabilities())
+            elif path == "/api/chat/threads":
+                self._json(200, self.app._chat_threads())
+            elif path == "/api/chat/thread":
+                self._json(200, self.app._chat_thread(parse_qs(urlsplit(self.path).query)))
+            elif path == "/api/chat/stream":
+                self._chat_stream(parse_qs(urlsplit(self.path).query))
             elif path == "/":
                 self._static("index.html", "text/html; charset=utf-8")
             elif path == "/styles.css":
@@ -201,19 +325,77 @@ class _RequestHandler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path == "/api/refresh":
             self.app.scanner.scan_all()
+            if self.app.indexer is not None:
+                self.app.indexer.index_due()
             self._json(200, self.app._status())
         elif path == "/api/resume":
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-                if not 0 < length <= 8192:
-                    raise ValueError("invalid content length")
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                status, response = self.app._resume(payload)
-                self._json(status, response)
-            except (ValueError, TypeError, UnicodeError, json.JSONDecodeError):
-                self._error(400)
+            self._post_json(path, self.app._resume, 8192)
+        elif path in ("/api/chat/new", "/api/chat/send", "/api/chat/cancel"):
+            handlers = {
+                "/api/chat/new": self.app._chat_new,
+                "/api/chat/send": self.app._chat_send,
+                "/api/chat/cancel": self.app._chat_cancel,
+            }
+            self._post_json(path, handlers[path], CHAT_BODY_MAX)
         else:
             self._error(404)
+
+    def _post_json(self, path: str, handler, max_length: int) -> None:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= max_length:
+                raise ValueError("invalid content length")
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            status, response = handler(payload)
+            self._json(status, response)
+        except (ValueError, TypeError, UnicodeError, json.JSONDecodeError):
+            self._error(400)
+
+    def _chat_stream(self, query: dict[str, list[str]]) -> None:
+        """SSE：按游标重放任务事件历史并实时推送新事件。
+
+        事件不消费（任务对象持有完整历史），断线重连、晚到的订阅者都能
+        从头重放。认证沿用 X-Agent-Trail-Key 头（前端用 fetch 流读取而非
+        EventSource，避免 key 出现在 URL/日志里）。
+        """
+        if self.app.chat is None:
+            self._error(403)
+            return
+        task_id = LocalServer._one(query, "task")
+        task = self.app.chat.subscribe(task_id) if task_id else None
+        if task is None:
+            self._error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        cursor = 0
+
+        def emit(event: dict) -> bool:
+            data = json.dumps(event, ensure_ascii=False).encode("utf-8")
+            self.wfile.write(b"data: " + data + b"\n\n")
+            self.wfile.flush()
+            return True
+
+        try:
+            while True:
+                with task.condition:
+                    while cursor >= len(task.events) and not task.is_finished:
+                        if not task.condition.wait(timeout=15.0):
+                            break
+                    events = list(task.events)
+                pending = events[cursor:]
+                for event in pending:
+                    emit(event)
+                cursor = len(events)
+                if task.is_finished and cursor >= len(events):
+                    break
+                if not pending and not task.is_finished:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
 
     def _valid_host(self) -> bool:
         return self.headers.get("Host", "") == f"127.0.0.1:{self.server.server_port}"

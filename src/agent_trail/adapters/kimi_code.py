@@ -4,9 +4,28 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from ..models import ActivitySession, AdapterStatus, ResumePlan, ScanResult
+from ..models import (
+    ActivitySession,
+    AdapterStatus,
+    ChatSupport,
+    ConversationContent,
+    ConversationMessage,
+    ResumePlan,
+    ScanResult,
+)
 from .base import BaseAdapter
-from .jsonl_utils import fingerprint_paths, read_jsonl_metadata, to_utc_iso
+from .jsonl_utils import fingerprint_paths, read_jsonl_metadata, read_jsonl_records, to_utc_iso
+
+
+def _content_text(content: object) -> str:
+    """拼接 kimi 消息 content 数组里的 text 块（think 等其他块跳过）。"""
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
+            parts.append(str(block["text"]))
+    return "\n".join(parts)
 
 
 class KimiCodeAdapter(BaseAdapter):
@@ -112,3 +131,94 @@ class KimiCodeAdapter(BaseAdapter):
             args=("--session", session.resume_ref),
             workdir=session.workdir,
         )
+
+    def read_messages(self, session: ActivitySession) -> ConversationContent | None:
+        # 正文在会话目录 agents/main/wire.jsonl（真机 2026-11 确认）：
+        # - 用户输入 = context.append_message 且 message.origin.kind=="user"
+        #   （"injection" 等其他 origin 是系统注入，跳过）
+        # - 助手回复优先取 context.append_message 的 assistant 消息；个别
+        #   协议版本只落流式 content.part 事件，此时回退聚合 part.text
+        wire_path = self._wire_path(session)
+        if wire_path is None:
+            return None
+        try:
+            parsed = read_jsonl_records(wire_path)
+        except OSError:
+            return None
+        if not parsed.records:
+            return ConversationContent(messages=[], truncated=False)
+        has_assistant_append = any(
+            record.get("type") == "context.append_message"
+            and isinstance(record.get("message"), dict)
+            and record["message"].get("role") == "assistant"
+            for record in parsed.records
+        )
+        messages: list[ConversationMessage] = []
+        pending_text: list[str] = []
+        pending_at: str | None = None
+
+        def flush_pending() -> None:
+            nonlocal pending_text, pending_at
+            if pending_text:
+                messages.append(
+                    ConversationMessage(role="assistant", text="\n".join(pending_text), timestamp=pending_at)
+                )
+            pending_text = []
+            pending_at = None
+
+        for record in parsed.records:
+            kind = record.get("type")
+            moment = record.get("time")
+            timestamp = to_utc_iso(moment) if isinstance(moment, (int, float, str)) else None
+            if kind == "context.append_message":
+                message = record.get("message")
+                if not isinstance(message, dict):
+                    continue
+                role = message.get("role")
+                if role == "assistant" and has_assistant_append:
+                    text = _content_text(message.get("content"))
+                    if text:
+                        flush_pending()
+                        messages.append(ConversationMessage(role="assistant", text=text, timestamp=timestamp))
+                    continue
+                origin = message.get("origin")
+                origin_kind = origin.get("kind") if isinstance(origin, dict) else None
+                if origin_kind == "user" and role == "user":
+                    text = _content_text(message.get("content"))
+                    if text:
+                        flush_pending()
+                        messages.append(ConversationMessage(role="user", text=text, timestamp=timestamp))
+                continue
+            if not has_assistant_append and kind == "context.append_loop_event":
+                event = record.get("event")
+                if not isinstance(event, dict):
+                    continue
+                if event.get("type") == "content.part":
+                    part = event.get("part")
+                    if isinstance(part, dict) and part.get("type") == "text" and part.get("text"):
+                        if not pending_at:
+                            pending_at = timestamp
+                        pending_text.append(str(part["text"]))
+                elif event.get("type") in ("step.end", "turn.ended"):
+                    flush_pending()
+                continue
+            if kind == "turn.ended":
+                flush_pending()
+        flush_pending()
+        return ConversationContent(messages=messages, truncated=False)
+
+    def _wire_path(self, session: ActivitySession) -> Path | None:
+        try:
+            locator = Path(session.source_locator)
+        except (OSError, ValueError):
+            return None
+        if not locator.name:
+            return None
+        wire = locator.parent / "agents" / "main" / "wire.jsonl"
+        return wire if wire.is_file() else None
+
+    def chat_support(self) -> ChatSupport | None:
+        # `kimi -p` 是官方无头模式，stream-json 事件与 --session 续聊已在
+        # 真机验证（见 chat_parsers 注释）；argv 传 prompt，封在 Windows
+        # 安全值。
+        return ChatSupport(executable="kimi", max_prompt_chars=8000)

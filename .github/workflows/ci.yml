@@ -103,6 +103,280 @@ jobs:
 
           print("engine unit checks OK on", sys.platform)
           PY
+      - name: Workbench unit checks (content/chat/store)
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, shutil, subprocess, sys, tempfile, time
+          import urllib.error, urllib.request
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          from agent_trail.adapters.chat_parsers import CHAT_BACKENDS, _claude_parse, _codex_parse, _opencode_parse, _kimi_parse
+          from agent_trail.adapters.base import BaseAdapter
+          from agent_trail.adapters import default_adapters
+          from agent_trail.adapters.kimi_code import KimiCodeAdapter
+          from agent_trail.adapters.codex import CodexAdapter
+          from agent_trail.adapters.claude_code import ClaudeCodeAdapter
+          from agent_trail.adapters.opencode import OpenCodeAdapter
+          from agent_trail.adapters.zcode import ZCodeAdapter
+          from agent_trail.adapters.minimax_code import MiniMaxCodeAdapter
+          from agent_trail.adapters.codebuddy import CodeBuddyAdapter
+          from agent_trail.adapters.pi import PiAdapter
+          from agent_trail.chat import ChatManager
+          from agent_trail.content import ContentIndexer
+          from agent_trail.models import ActivitySession, ConversationMessage
+          from agent_trail.scanner import ScanService
+          from agent_trail.server import LocalServer
+          from agent_trail.store import LocalStore
+
+          def fake_session(source, sid, locator, updated="2026-01-01T00:00:00+00:00"):
+              return ActivitySession(source=source, session_id=sid, workdir=str(Path.cwd()),
+                                     updated_at=updated, source_locator=locator)
+
+          # 1) kimi wire.jsonl 正文解析（含流式 content.part 回退路径）
+          with tempfile.TemporaryDirectory() as tmp:
+              sess_dir = Path(tmp) / "session_x"
+              (sess_dir / "agents" / "main").mkdir(parents=True)
+              wire = [
+                  {"type": "context.append_message", "time": 1788012497955,
+                   "message": {"role": "user", "origin": {"kind": "user"},
+                               "content": [{"type": "text", "text": "帮我看看这个"}]}},
+                  {"type": "context.append_message", "time": 1788012497960,
+                   "message": {"role": "user", "origin": {"kind": "injection"},
+                               "content": [{"type": "text", "text": "<system-reminder>注入</system-reminder>"}]}},
+                  {"type": "context.append_loop_event",
+                   "event": {"type": "content.part", "part": {"type": "text", "text": "第一段"}}},
+                  {"type": "context.append_loop_event",
+                   "event": {"type": "content.part", "part": {"type": "text", "text": "第二段"}}},
+                  {"type": "turn.ended", "time": 1788012522181},
+              ]
+              (sess_dir / "agents" / "main" / "wire.jsonl").write_text(
+                  "\n".join(json.dumps(line) for line in wire) + "\n", encoding="utf-8")
+              state = sess_dir / "state.json"
+              state.write_text("{}", encoding="utf-8")
+              kimi = KimiCodeAdapter(Path.home())
+              content = kimi.read_messages(fake_session("kimi-code", "s1", str(state)))
+              assert content is not None and len(content.messages) == 2, content
+              assert content.messages[0].role == "user" and "帮我看看这个" in content.messages[0].text
+              assert content.messages[1].role == "assistant" and "第一段\n第二段" == content.messages[1].text
+          print("kimi read_messages OK")
+
+          # 2) codex rollout 与 claude transcript 正文解析
+          with tempfile.TemporaryDirectory() as tmp:
+              rollout = Path(tmp) / "rollout.jsonl"
+              rollout.write_text("\n".join(json.dumps(line) for line in [
+                  {"type": "session_meta", "payload": {"id": "t1", "cwd": "/tmp"}},
+                  {"type": "response_item", "timestamp": "2026-01-01T00:00:00Z",
+                   "payload": {"type": "message", "role": "developer",
+                               "content": [{"type": "input_text", "text": "permissions"}]}},
+                  {"type": "response_item", "timestamp": "2026-01-01T00:00:01Z",
+                   "payload": {"type": "message", "role": "user",
+                               "content": [{"type": "input_text", "text": "<user_instructions>hi</user_instructions>"}]}},
+                  {"type": "response_item", "timestamp": "2026-01-01T00:00:02Z",
+                   "payload": {"type": "message", "role": "user",
+                               "content": [{"type": "input_text", "text": "真正的提问"}]}},
+                  {"type": "response_item", "timestamp": "2026-01-01T00:00:03Z",
+                   "payload": {"type": "message", "role": "assistant",
+                               "content": [{"type": "output_text", "text": "回答"}]}},
+              ]) + "\n", encoding="utf-8")
+              codex = CodexAdapter(Path.home())
+              content = codex.read_messages(fake_session("codex", "t1", str(rollout)))
+              assert content is not None and [m.role for m in content.messages] == ["user", "assistant"], content
+              assert content.messages[0].text == "真正的提问"
+          print("codex read_messages OK")
+
+          with tempfile.TemporaryDirectory() as tmp:
+              transcript = Path(tmp) / "c.jsonl"
+              transcript.write_text("\n".join(json.dumps(line) for line in [
+                  {"type": "user", "sessionId": "cs1", "cwd": str(tmp),
+                   "timestamp": "2026-01-01T00:00:00.000Z",
+                   "message": {"role": "user", "content": "<system-reminder>提醒</system-reminder>"}},
+                  {"type": "user", "sessionId": "cs1", "cwd": str(tmp),
+                   "timestamp": "2026-01-01T00:00:01.000Z",
+                   "message": {"role": "user", "content": "claude 提问"}},
+                  {"type": "assistant", "timestamp": "2026-01-01T00:00:02.000Z",
+                   "message": {"role": "assistant", "content": [{"type": "text", "text": "claude 回答"}]}},
+              ]) + "\n", encoding="utf-8")
+              claude = ClaudeCodeAdapter(Path.home())
+              content = claude.read_messages(fake_session("claude-code", "cs1", str(transcript)))
+              assert content is not None and [m.text for m in content.messages] == ["claude 提问", "claude 回答"], content
+          print("claude read_messages OK")
+
+          # 3) 聊天后端：argv 构造 + 行解析（prompt 不进 build_argv，由
+          #    ChatManager 按 prompt_via 经 stdin/argv 追加）
+          claude_argv = CHAT_BACKENDS["claude-code"].build_argv("res123")
+          assert claude_argv[:3] == ["claude", "-p", "--output-format"]
+          assert claude_argv[-2:] == ["--resume", "res123"]
+          assert CHAT_BACKENDS["claude-code"].prompt_via == "stdin"
+          codex_argv = CHAT_BACKENDS["codex"].build_argv("sid9")
+          assert codex_argv[:4] == ["codex", "exec", "resume", "sid9"] and "--json" in codex_argv
+          assert CHAT_BACKENDS["codex"].build_argv(None) == ["codex", "exec", "--json"]
+          assert CHAT_BACKENDS["codex"].prompt_via == "argv"
+          assert _codex_parse('{"type":"thread.started","thread_id":"thr1"}').session_ref == "thr1"
+          assert _codex_parse('{"type":"item.completed","item":{"item_type":"agent_message","text":"hi"}}').text == "hi"
+          assert _codex_parse("not json") is None
+          assert _claude_parse('{"type":"result","result":"done","session_id":"s1"}').type == "done"
+          assert _claude_parse('{"type":"assistant","message":{"content":[{"type":"text","text":"回答"}]}}').text == "回答"
+          assert _opencode_parse("纯文本").type == "text"
+          # prompt 不进 argv（stdin 后端）/ 进 argv（argv 后端）由 ChatManager 负责
+          assert CHAT_BACKENDS["kimi-code"].build_argv("session_x") == [
+              "kimi", "--session", "session_x", "--output-format", "stream-json", "-p",
+          ]
+          assert _kimi_parse('{"role":"assistant","content":"收到"}').text == "收到"
+          assert _kimi_parse('{"role":"meta","type":"session.resume_hint","session_id":"s1"}').session_ref == "s1"
+          assert _kimi_parse('{"role":"meta","type":"system.version","version":"2.8.1"}') is None
+          print("chat backends OK")
+
+          # 3.5) 国产工具正文解析（合成 fixture，覆盖真实格式）
+          with tempfile.TemporaryDirectory() as tmp:
+              # zcode：CLI 库 message/part，过滤 synthetic 与 model-only
+              db = Path(tmp) / "db.sqlite"
+              conn = sqlite3.connect(str(db))
+              conn.execute("CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT, sequence INTEGER)")
+              conn.execute("CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT, data TEXT, sequence INTEGER)")
+              conn.execute("INSERT INTO message VALUES ('m1','s1',10,'{\"role\":\"user\",\"time\":{\"created\":10}}',0)")
+              conn.execute("INSERT INTO message VALUES ('m2','s1',20,'{\"role\":\"user\",\"synthetic\":true,\"visibility\":\"model-only\"}',1)")
+              conn.execute("INSERT INTO message VALUES ('m3','s1',30,'{\"role\":\"assistant\",\"time\":{\"created\":30}}',2)")
+              conn.execute("INSERT INTO part VALUES ('p1','m1','s1','{\"type\":\"text\",\"text\":\"zcode 提问\"}',0)")
+              conn.execute("INSERT INTO part VALUES ('p2','m3','s1','{\"type\":\"text\",\"text\":\"zcode 回答\"}',0)")
+              conn.commit(); conn.close()
+              zcode = ZCodeAdapter(Path.home())
+              content = zcode.read_messages(fake_session("zcode", "s1", str(db)))
+              assert content is not None and [m.text for m in content.messages] == ["zcode 提问", "zcode 回答"], content
+
+              # minimax：local_runtime_message_rows，msg_type=1 + api/background-task
+              db2 = Path(tmp) / "mm.sqlite"
+              conn = sqlite3.connect(str(db2))
+              conn.execute("CREATE TABLE local_runtime_message_rows (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, source TEXT, created_at_ms INTEGER, data_json TEXT)")
+              conn.executemany(
+                  "INSERT INTO local_runtime_message_rows (session_id, role, source, created_at_ms, data_json) VALUES (?,?,?,?,?)",
+                  [
+                      ("s1", "user", "api", 1000, json.dumps({"msg_type": 1, "msg_content": "minimax 提问"})),
+                      ("s1", "assistant", "api", 2000, json.dumps({"msg_type": 2, "msg_content": "中间步骤不该出现"})),
+                      ("s1", "assistant", "api", 3000, json.dumps({"msg_type": 1, "msg_content": "minimax 回答"})),
+                      ("s1", "assistant", "api", 4000, json.dumps({"msg_type": 1, "msg_content": ""})),
+                      ("s1", "assistant", "questionnaire", 5000, json.dumps({"msg_type": 1, "msg_content": "问卷噪声"})),
+                  ],
+              )
+              conn.commit(); conn.close()
+              minimax = MiniMaxCodeAdapter(Path.home())
+              content = minimax.read_messages(fake_session("minimax-code", "s1", str(db2)))
+              assert content is not None and [m.text for m in content.messages] == ["minimax 提问", "minimax 回答"], content
+
+              # codebuddy：message JSONL + ai-title 原生标题（fixture 伪装成
+              # 独立 home，避免读真实 ~/.codebuddy）
+              buddy_home = Path(tmp) / "buddy-home"
+              project = buddy_home / ".codebuddy" / "projects" / "p1"
+              project.mkdir(parents=True)
+              buddy = project / "b1.jsonl"
+              buddy.write_text("\n".join(json.dumps(line) for line in [
+                  {"type": "message", "sessionId": "b1", "cwd": str(tmp), "timestamp": 1000, "role": "user",
+                   "content": [{"type": "input_text", "text": "codebuddy 提问"}]},
+                  {"type": "message", "timestamp": 2000, "role": "assistant",
+                   "content": [{"type": "output_text", "text": "codebuddy 回答"}]},
+                  {"type": "ai-title", "sessionId": "b1", "aiTitle": "AI 生成的标题", "timestamp": 2500},
+              ]) + "\n", encoding="utf-8")
+              buddy_adapter = CodeBuddyAdapter(buddy_home)
+              content = buddy_adapter.read_messages(fake_session("codebuddy", "b1", str(buddy)))
+              assert content is not None and [m.text for m in content.messages] == ["codebuddy 提问", "codebuddy 回答"], content
+              buddy_scan = buddy_adapter.scan(None, datetime.now(timezone.utc))
+              titled = [s for s in buddy_scan.sessions if s.session_id == "b1"]
+              assert titled and titled[0].title == "AI 生成的标题" and titled[0].title_source == "native", titled
+
+              # pi：message JSONL 内嵌 message={role, content}
+              pi_file = Path(tmp) / "pi1.jsonl"
+              pi_file.write_text("\n".join(json.dumps(line) for line in [
+                  {"type": "session", "id": "p1", "cwd": str(tmp)},
+                  {"type": "message", "timestamp": "2026-01-01T00:00:00.000Z",
+                   "message": {"role": "user", "content": [{"type": "text", "text": "pi 提问"}]}},
+                  {"type": "message", "timestamp": "2026-01-01T00:00:01.000Z",
+                   "message": {"role": "assistant", "content": [{"type": "text", "text": "pi 回答"}]}},
+              ]) + "\n", encoding="utf-8")
+              pi_adapter = PiAdapter(Path.home())
+              content = pi_adapter.read_messages(fake_session("pi", "p1", str(pi_file)))
+              assert content is not None and [m.text for m in content.messages] == ["pi 提问", "pi 回答"], content
+          print("domestic adapters read_messages OK")
+
+          # 4) ContentIndexer：增量索引 + FTS/LIKE 检索 + 失效键
+          with tempfile.TemporaryDirectory() as tmp:
+              data_dir = Path(tmp) / "data"
+              store = LocalStore(data_dir / "index.sqlite")
+              rollout = Path(tmp) / "r.jsonl"
+              rollout.write_text('{"type":"response_item","timestamp":"2026-01-01T00:00:00Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"搜索引擎的独特词 zigzagmesh"}]}}\n', encoding="utf-8")
+              codex = CodexAdapter(Path.home())
+              session = fake_session("codex", "f1", str(rollout))
+              store.replace_source("codex", [session], "fp", "2026-01-01T00:00:00+00:00")
+              indexer = ContentIndexer(store, [codex])
+              assert indexer.index_due() == 1
+              assert indexer.index_due() == 0  # 未变化则跳过
+              hits = store.search_content("zigzagmesh")
+              assert hits and hits[0].session_id == "f1" and "zigzagmesh" in hits[0].snippet, hits
+              # 源文件变化后重新索引
+              time.sleep(0.02)
+              rollout.write_text('{"type":"response_item","timestamp":"2026-01-01T00:00:00Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"新的独特词 plughxyzzy"}]}}\n', encoding="utf-8")
+              assert indexer.index_due() == 1
+              assert not store.search_content("zigzagmesh")
+              assert store.search_content("plughxyzzy")
+              store.close()
+          print("content indexer OK (fts=%s)" % store.fts_available)
+
+          # 5) ChatManager 全链路（POSIX 用 stub 可执行文件）
+          if os.name == "posix":
+              with tempfile.TemporaryDirectory() as tmp:
+                  bin_dir = Path(tmp) / "bin"
+                  bin_dir.mkdir()
+                  stub = bin_dir / "codex"
+                  stub.write_text(
+                      "#!/bin/sh\ncat > /dev/null\n"
+                      "echo '{\"type\":\"thread.started\",\"thread_id\":\"thr_stub\"}'\n"
+                      "echo '{\"type\":\"item.completed\",\"item\":{\"item_type\":\"agent_message\",\"text\":\"stub reply\"}}'\n",
+                      encoding="utf-8")
+                  stub.chmod(0o755)
+                  env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+                  store = LocalStore(Path(tmp) / "i.sqlite")
+                  adapters = default_adapters(Path.home())
+                  ScanService(store, adapters).scan_all()
+                  manager = ChatManager(store, adapters)
+                  thread = manager.create_thread("codex", str(tmp), None)
+                  task_id = manager.start_turn(thread.id, "hello")
+                  task = manager.subscribe(task_id)
+                  deadline = time.time() + 10
+                  while not task.is_finished and time.time() < deadline:
+                      time.sleep(0.05)
+                  assert task.is_finished, "stub chat turn did not finish"
+                  texts = [event.get("text") for event in task.events if event.get("type") == "text"]
+                  assert "stub reply" in "".join(texts), task.events
+                  messages = store.thread_messages(thread.id)
+                  assert [m.role for m in messages] == ["user", "assistant"], messages
+                  assert "stub reply" in messages[-1].text
+                  assert store.get_thread(thread.id).session_ref == "thr_stub"
+                  assert store.get_thread(thread.id).title == "hello"  # 首条消息自动命名
+                  store.close()
+                  print("chat manager loop OK")
+
+          # 6) 本地服务鉴权边界：SSE 与聊天 API 无令牌必须拒绝
+          with tempfile.TemporaryDirectory() as tmp:
+              store = LocalStore(Path(tmp) / "i.sqlite")
+              adapters = default_adapters(Path.home())
+              scanner = ScanService(store, adapters)
+              scanner.scan_all()
+              server = LocalServer(store, scanner, chat=ChatManager(store, adapters))
+              base = server.start()
+              base = base.split("/?")[0]
+              for path in ("/api/chat/stream?task=x", "/api/search?q=x", "/api/session/messages?source=codex&session_id=x"):
+                  try:
+                      urllib.request.urlopen(base + path, timeout=5)
+                  except urllib.error.HTTPError as error:
+                      assert error.code == 403, (path, error.code)
+                  else:
+                      raise AssertionError(f"unauthenticated {path} was not rejected")
+              server.stop()
+              store.close()
+              print("workbench auth boundaries OK")
+
+          print("workbench unit checks OK on", sys.platform)
+          PY
       - name: Smoke test in a fresh venv
         shell: bash
         run: |

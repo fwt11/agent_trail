@@ -2,7 +2,7 @@
 
 中文 | [English](README.en.md)
 
-跨 Agent 的本地工作记忆：自动发现你机器上各种编码 Agent 留下的会话记录，汇成一条按日期分组的时间线，帮你回答"昨天那个东西我到底是用哪个工具、在哪个目录做的"，并尽量一键回到原会话继续工作。
+本地 Agent 工作台：一边是跨 Agent 的会话时间线——自动发现你机器上各种编码 Agent 留下的会话记录，汇成一条按日期分组的统一视图；一边是应用内对话——直接和已安装的 Agent CLI 流式聊天，全程数据不出本机。
 
 ![时间线截图](docs/screenshot.png)
 
@@ -12,11 +12,14 @@
 
 - **自动发现**：只读扫描各 Agent 已保存的本机会话（JSONL / JSON / SQLite），不改变任何现有使用习惯
 - **统一时间线**：按本地日期分组、按最后活动时间倒序；支持今天/昨天/最近 7 天、Agent、项目目录和标题/目录文本筛选
+- **会话正文查看**：在详情弹窗里直接查看会话消息（支持 Markdown 渲染），按需惰性读取，只落本机
+- **全文检索**：对会话正文建本地 FTS5 索引，顶栏搜索框即输即搜，命中片段高亮并可跳转会话（FTS5 不可用时自动降级 LIKE）
+- **应用内对话**：新建对话线程，与 Kimi Code（`kimi -p`，真机验证）、Claude Code（`claude -p`）、Codex（`codex exec`）、OpenCode（`opencode run`）流式对话；线程历史持久化、可续聊、可随时停止
 - **实时更新**：Linux 下用 inotify 监控源文件变化，秒级反映新会话（不可用时自动回退到定时轮询）
 - **工作段折叠**：同一 Agent、同一目录、相邻间隔 ≤45 分钟的会话可折叠为一段，展开仍能定位每个原会话
 - **回到原会话**：对真实验证过恢复路径的工具，在原工作目录起一个新终端执行对应恢复命令
-- **隐私优先**：本地索引只存元数据（标题、目录、时间、统计），不存任何消息正文、代码、diff 或凭据；HTTP 服务只绑定 127.0.0.1，每次启动生成高熵访问令牌
-- **诚实降级**：没有原生标题就显示"未命名会话"，恢复路径没验证过就不显示恢复按钮，绝不伪造
+- **隐私优先**：正文只在本机索引（可用 `--no-content-index` 整体关闭），从不外传；HTTP 服务只绑定 127.0.0.1，每次启动生成高熵访问令牌
+- **诚实降级**：没有原生标题就显示"未命名会话"，恢复路径没验证过就不显示恢复按钮，CLI 不在 PATH 就如实提示，绝不伪造
 
 ## 平台支持
 
@@ -31,17 +34,17 @@
 
 ## 支持的 Agent
 
-| Agent | 时间线 | 回到原会话 | 说明 |
-| --- | :-: | :-: | --- |
-| Kimi Code | ✅ | ✅ | `kimi --session <id>`，真机验证 |
-| CodeBuddy | ✅ | ✅ | `codebuddy --resume <id>`，真机验证 |
-| MiniMax Code | ✅ | ✅ | `mcode --session <id>`，主会话真机验证；子代理会话只读 |
-| OpenCode | ✅ | ✅ | `opencode --session <id>`，真机验证 |
-| ZCode | ✅ | ➖ | 深链路由未验证，只读展示 |
-| DeepSeek Harness | ✅ | ➖ | 恢复未通过真机验证，只读展示 |
-| Pi | ✅ | ➖ | 恢复未通过真机验证，只读展示 |
-| Codex | ✅ | ➖ | 恢复需要目录信任决策，未授权验证，只读展示 |
-| Claude Code | ⚠️ | ➖ | 实验性检测，本机无数据时不产生虚假记录 |
+| Agent | 时间线 | 正文查看 | 应用内对话 | 回到原会话 | 说明 |
+| --- | :-: | :-: | :-: | :-: | --- |
+| Kimi Code | ✅ | ✅ | ✅ | ✅ | 对话 `kimi -p --output-format stream-json`（真机验证，支持 `--session` 续聊）；恢复 `kimi --session <id>` |
+| ZCode | ✅ | ✅ | ➖ | ➖ | 正文读 CLI 库 message/part 表（真机确认）；桌面版暂无可验证的无头 CLI，深链未验证 |
+| MiniMax Code | ✅ | ✅ | ➖ | ✅ | 正文读 `local_runtime_message_rows`（msg_type=1 展示消息）；恢复 `mcode --session <id>` 真机验证 |
+| CodeBuddy | ✅ | ✅ | ➖ | ✅ | 正文读项目 JSONL；`ai-title` 记录作为原生标题；恢复 `codebuddy --resume <id>` 真机验证 |
+| OpenCode | ✅ | ✅ | ✅ | ✅ | 对话 `opencode run`；恢复 `opencode --session <id>`，真机验证 |
+| Codex | ✅ | ✅ | ✅ | ➖ | 对话 `codex exec`；恢复需要目录信任决策，未授权验证 |
+| Claude Code | ⚠️ | ✅ | ✅ | ➖ | 元数据/正文为实验性解析；对话 `claude -p`（prompt 经 stdin） |
+| Pi | ✅ | ✅ | ➖ | ➖ | 正文读会话 JSONL；恢复未验证 |
+| DeepSeek Harness | ✅ | ➖ | ➖ | ➖ | 会话正文是 zstd 压缩格式，零依赖原则下不解析；恢复未验证 |
 
 ## 安装
 
@@ -75,9 +78,16 @@ agent-trail serve --port 8731        # 固定端口（默认随机）
 agent-trail serve --no-browser       # 不自动打开浏览器
 agent-trail serve --no-watch         # 禁用 inotify，只用定时轮询
 agent-trail serve --interval 30      # 轮询间隔（watch 健康时自动降为 5 分钟安全网）
+agent-trail serve --no-content-index # 关闭正文索引（隐私优先模式：全文搜索与消息查看停用，对话仍可用）
 ```
 
 启动后控制台 URL 带一次性高熵访问令牌（如 `http://127.0.0.1:8731/?key=…`）；令牌保存在浏览器 sessionStorage，后续请求通过请求头携带，所有 API 都会校验。手动刷新按钮立即触发一次扫描。
+
+### 工作台：正文 / 搜索 / 对话
+
+- **正文与搜索**：扫描后后台增量索引支持查看的来源；顶栏搜索框全文检索正文，点击命中直接打开会话并定位正文。索引只写本机 `~/.agent-trail/index.sqlite`，每会话封顶 2000 条消息、单条 20KB。
+- **对话**：切换到「对话」视图 → 选 Agent 与工作目录 → 新建对话。线程自动以首条消息命名，Agent 回复流式渲染（Markdown 代码块等），回合结束自动保存历史；对支持续聊的 CLI（claude/codex/opencode）自动记住会话引用，同一线程可继续追问。「停止」按钮会终止整个进程组（Agent 派生的子工具进程一并停止）。
+- 对话不依赖任何服务器：所有流量走本机回环 + 令牌，Agent 子进程在你指定的工作目录里运行。
 
 ## 桌面托盘（Linux）
 
@@ -115,25 +125,30 @@ Windows 自启动写注册表 HKCU Run 键；后台运行经 pythonw 脱离终�
 JSONL / JSON / SQLite ─▶ 适配器（9 种，只读） ─▶ 元数据索引    ─▶ 本地网页时间线
   ~/.kimi-code/…          规范化为统一模型      (SQLite)      127.0.0.1 + 令牌
   ~/.zcode/…              指纹增量去重                        筛选 / 详情 / 恢复
-  ~/.codex/…              inotify 事件触发重扫
+  ~/.codex/…              inotify 事件触发重扫                正文查看 / 全文检索
+                                                             应用内对话（SSE 流式）
+claude / codex / opencode ─▶ ChatManager（argv 白名单）─▶ 子进程 stdout 事件 ─▶ 对话线程持久化
 ```
 
-- **适配器契约**：每个 Agent 一个适配器，实现发现（discover）、扫描（scan）、状态（status）、恢复计划（resume_plan）四个边界；数据源格式变化时报告不兼容而不是猜测
+- **适配器契约**：每个 Agent 一个适配器，实现发现（discover）、扫描（scan）、状态（status）、恢复计划（resume_plan）四个边界，另有可选的正文读取（read_messages）与聊天能力（chat_support）；数据源格式变化时报告不兼容而不是猜测
 - **增量扫描**：以源路径、大小、mtime 和适配器版本计算指纹，未变化的来源毫秒级跳过
 - **实时监控**：`watcher.py` 用 ctypes 直接调 libc inotify（保持零依赖），目录级 watch 覆盖原子替换与 WAL sidecar 变化；去抖 + 最小间隔合并高频写入
 - **恢复安全**：恢复命令来自适配器白名单参数数组，不经过 shell；API 只接受会话标识，服务端重新查库生成计划，调用者无法注入命令或目录
+- **对话安全**：聊天子进程用 argv 数组 + 双重白名单启动，prompt 经 stdin 或单个 argv 元素传入；POSIX 独立进程组启动、整组终止；并发与超时双封顶
 - **源数据只读**：SQLite 源以 `mode=ro` 打开，禁止任何写事务；源记录删除后保留最后元数据并标记"源已缺失"、禁用恢复
 
 ## 隐私与安全
 
 - 明确不读取各工具的 credentials、auth、token、密钥类文件
-- 本地索引与日志不保存消息正文、代码、命令、diff、附件或凭据
-- HTTP 仅绑定回环地址；刷新与恢复使用 POST 并校验 Origin，防止外部网页诱导本机服务执行动作
+- 消息正文仅在本机索引与展示，绝不上传；`--no-content-index` 可整体关闭正文能力
+- HTTP 仅绑定回环地址；刷新、恢复、对话全部校验令牌与 Origin，防止外部网页诱导本机服务执行动作
 - 网页不加载任何第三方脚本、字体或统计
 
 ## 已知限制
 
-- 元数据优先：部分会话只有"未命名会话"，以目录和时间辅助识别；不读取首条用户消息补标题
+- 正文查看支持 Kimi Code、ZCode、MiniMax Code、CodeBuddy、OpenCode、Codex、Claude Code、Pi；DeepSeek Harness 的正文是 zstd 压缩格式，零依赖原则下不解析
+- 应用内对话需要对应 CLI 在 PATH 中（kimi / claude / codex / opencode）；ZCode、CodeBuddy、MiniMax 的桌面/CLI 版暂无可验证的无头模式，只支持"跳回终端"
+- 部分会话只有"未命名会话"，以目录和时间辅助识别
 - 适配器基于当前各工具的本机数据格式，工具升级后可能需要更新
 - "回到工作现场"指原 Agent 会话与目录，不保证恢复未保存的文件或桌面布局
 

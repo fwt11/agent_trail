@@ -223,3 +223,47 @@
 - 本版主要依据本机现有格式，工具升级后需要维护适配器。
 - ZCode 的原会话恢复仍需验证具体深链；Claude Code 需要真实安装与记录才能完成验证。
 - “回到工作现场”指原 Agent 会话与目录，不保证恢复当时未保存的文件或完整桌面布局。
+
+## 15. 0.5.0 扩展：工作台能力（会话正文 / 全文检索 / 应用内对话）
+
+- 日期：2026-11-28
+- 状态：已批准（用户方向：向 AionUI 式本地 Agent 工作台演进）
+- 与第 3、10 节的关系：本节**受控放宽**"只存元数据"与"非全文检索"两条首版约束；其余原则（源数据只读、127.0.0.1 + 令牌、诚实降级、不碰原会话数据）全部继续适用。
+
+### 放宽后的隐私边界
+
+- 消息正文**只在需要时**从源文件惰性读取，仅落本机 `~/.agent-trail/index.sqlite`（`content_messages` / `message_fts` 表），绝不上传；仍禁止读取 credentials/auth/token 类文件。
+- 正文索引可用 `serve --no-content-index`（或 `AGENT_TRAIL_NO_CONTENT=1`）整体关闭；关闭后全文搜索与详情消息查看显示"未启用"，应用内对话不受影响。
+- 每会话索引上限 2000 条消息、单条 20KB，封顶 DB 增长；失效键 = source_locator 的 `mtime_ns + size + adapter_version`。
+
+### 新增适配器可选能力（不破坏现有 9 个适配器）
+
+1. `read_messages(session)`：按需解析正文；不支持返回 `None`。已实现：Kimi Code（`agents/main/wire.jsonl`）、Codex（rollout JSONL 的 `response_item.message`）、Claude Code（transcript JSONL，元数据扫描同时启用，仍标 experimental）、OpenCode（`opencode.db` 的 message/part 表，legacy 走 storage JSON）。
+2. `chat_support()`：声明 CLI 可无头驱动。已实现：claude-code（`claude -p`，prompt 走 stdin）、codex（`codex exec --json`）、opencode（`opencode run`）。Kimi 等继续走"跳回终端"，ACP 协议接入列入路线图。
+
+### 应用内对话架构
+
+- `chat.py::ChatManager`：每个回合 = 一个 Agent 子进程 + 一段可重放事件历史（`events` 列表 + Condition）；SSE 按游标重放，多客户端/断线重连安全。
+- 安全：argv 数组直传 + `CHAT_BACKENDS` 白名单 + `shutil.which` 校验；POSIX 以独立进程组启动，取消时 `killpg` 整组终止（Agent 工具常派生孙进程握住管道）；prompt 走 stdin 或单个 argv 元素（Windows 命令行长度封顶 8000 字符）；并发 ≤4、墙钟超时 600s；stderr 不并入对话流。
+- 历史与线程持久化在 `chat_threads` / `chat_messages` 表；回合结束时捕获 Agent 的 session id（`session_ref`）实现续聊（claude `--resume`、codex `exec resume`、opencode `--session`）。
+- 对话过程不读写原 Agent 的会话文件，只在新终端恢复（原路径）与应用内对话（新路径）间保持互不干扰。
+
+### 前端形态
+
+- 顶栏新增「时间线 / 对话」视图切换与全局全文搜索框；会话详情弹窗内嵌"会话消息"分区（懒加载）。
+- 继续零框架、零外部资源：Markdown 由内置迷你渲染器生成（先整体转义再生成受控标签，符合 CSP `script-src 'self'`）。
+
+### 15.1 国产工具优先（2026-11-28 用户方向确认）
+
+用户主力使用国产工具（ZCode、Kimi Code、CodeBuddy、MiniMax Code 等），第二轮把国产支持提到最高优先级。真机（2026-11-28）逐家确认的结果：
+
+| 来源 | 正文载体 | 结论 |
+| --- | --- | --- |
+| Kimi Code | `agents/main/wire.jsonl` + CLI `-p` 无头模式 | 正文✅ 对话✅（`kimi -p --output-format stream-json` 与 `--session` 续聊均真机验证） |
+| ZCode | CLI 库 `message`/`part` 表（synthetic / visibility=model-only 过滤） | 正文✅；桌面版无可验证的无头 CLI（app.asar 中的 `--print` 命中均为打包 elisp 噪声），对话➕暂不支持 |
+| MiniMax Code | `local_runtime_message_rows`（msg_type=1 为回合展示消息，source 限定 api/background-task） | 正文✅；CLI 无头模式未验证，对话暂不支持 |
+| CodeBuddy | 项目 JSONL 的 `message` 记录；`ai-title` 记录提供原生标题 | 正文✅ + scan 标题改进；CLI 未装，对话暂不支持 |
+| Pi | 会话 JSONL 内嵌 message | 正文✅ |
+| DeepSeek Harness | `session.v3.jsonl.zstd`（zstd 压缩） | 正文❌——标准库无 zstd，保持零依赖原则不引入系统依赖，诚实降级 |
+
+原则重申：对话能力只在 CLI 存在且无头模式可验证时声明（"诚实降级"）；正文解析保持只读、防御式、逐行容错。

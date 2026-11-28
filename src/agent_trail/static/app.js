@@ -33,6 +33,7 @@ const state = {
   sessions: [],
   statuses: [],
   activeSession: null,
+  workbench: { content_enabled: true, chat_enabled: true },
 };
 let apiKey = "";
 let requestSequence = 0;
@@ -243,6 +244,10 @@ async function loadFilterOptions() {
 async function loadStatus() {
   const status = await api("/api/status");
   state.statuses = status.sources;
+  state.workbench = {
+    content_enabled: Boolean(status.content_enabled),
+    chat_enabled: Boolean(status.chat_enabled),
+  };
   document.getElementById("last-scan").textContent = status.last_scanned_at
     ? t("status.scanned_at", { time: formatTime(status.last_scanned_at) })
     : t("status.not_scanned");
@@ -361,8 +366,9 @@ function renderTimeline() {
   }
 }
 
-function showDetails(session) {
+function showDetails(session, options = {}) {
   state.activeSession = session;
+  session.__autoLoadMessages = Boolean(options.autoLoadMessages) || Boolean(session.__autoLoadMessages);
   const dialog = document.getElementById("session-dialog");
   document.getElementById("detail-source").replaceChildren(makeSourceBadge(session.source));
   document.getElementById("detail-title").textContent = sessionTitle(session);
@@ -393,7 +399,438 @@ function showDetails(session) {
   } else {
     reason.textContent = t("resume.reason_ok");
   }
+  resetDetailMessages(session);
   dialog.showModal();
+  if (session.__autoLoadMessages) loadSessionMessages(session);
+}
+
+// ---- Markdown 迷你渲染器：先整体转义，再生成受控标签；正文不经过 innerHTML 原样注入 ----
+
+function escapeHtml(text) {
+  return String(text)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+function markdownInlineHtml(escaped) {
+  return escaped
+    .split(/\n{2,}/)
+    .map((paragraph) => {
+      const body = paragraph
+        .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+        .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+        .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+        .replaceAll("\n", "<br>");
+      return `<p>${body}</p>`;
+    })
+    .join("");
+}
+
+function markdownToHtml(raw) {
+  const text = String(raw ?? "");
+  const parts = text.split("```");
+  let html = "";
+  for (let index = 0; index < parts.length; index++) {
+    const segment = parts[index];
+    if (index % 2 === 1) {
+      const newline = segment.indexOf("\n");
+      const lang = newline >= 0 ? segment.slice(0, newline).trim() : "";
+      const code = (newline >= 0 ? segment.slice(newline + 1) : segment).replace(/\n$/, "");
+      html += `<pre><code>${escapeHtml(code)}</code></pre>`;
+    } else if (segment) {
+      html += markdownInlineHtml(escapeHtml(segment));
+    }
+  }
+  return html;
+}
+
+function snippetToHtml(snippet) {
+  // 后端 snippet() 的 <mark> 包住的是原文；先转义再还原受控的 mark 标签。
+  return escapeHtml(snippet).replaceAll("&lt;mark&gt;", "<mark>").replaceAll("&lt;/mark&gt;", "</mark>");
+}
+
+function makeMessageNode(role, html, { streaming = false } = {}) {
+  const node = element("div", `chat-msg role-${role}${streaming ? " is-streaming" : ""}`);
+  const meta = element("div", "chat-msg-meta");
+  meta.append(element("span", "chat-msg-role", t(`chat.role_${role}`) || role));
+  node.append(meta, element("div", "md-body"));
+  node.querySelector(".md-body").innerHTML = html;
+  return node;
+}
+
+// ---- 会话消息查看器（详情弹窗内） ----
+
+function resetDetailMessages(session) {
+  const button = document.getElementById("load-messages");
+  const status = document.getElementById("detail-messages-status");
+  const container = document.getElementById("detail-messages");
+  container.replaceChildren();
+  status.hidden = false;
+  status.textContent = "";
+  if (!state.workbench.content_enabled) {
+    button.hidden = true;
+    status.textContent = t("messages.status_disabled");
+    return;
+  }
+  button.hidden = false;
+  status.hidden = true;
+  button.onclick = () => loadSessionMessages(session);
+}
+
+async function loadSessionMessages(session) {
+  const button = document.getElementById("load-messages");
+  const status = document.getElementById("detail-messages-status");
+  const container = document.getElementById("detail-messages");
+  button.hidden = true;
+  status.hidden = false;
+  status.textContent = t("messages.loading");
+  let result;
+  try {
+    result = await api(
+      `/api/session/messages?source=${encodeURIComponent(session.source)}&session_id=${encodeURIComponent(session.session_id)}`,
+    );
+  } catch (error) {
+    status.textContent = t("messages.load_failed");
+    return;
+  }
+  if (result.status === "ok") {
+    status.hidden = true;
+    container.replaceChildren();
+    for (const message of result.messages) {
+      container.append(makeMessageNode(message.role, markdownToHtml(message.text)));
+    }
+    if (!result.messages.length) {
+      status.hidden = false;
+      status.textContent = t("messages.empty");
+    } else if (result.truncated) {
+      status.hidden = false;
+      status.textContent = t("messages.truncated");
+    }
+    container.scrollTop = 0;
+    return;
+  }
+  status.textContent = t(`messages.status_${result.status}`) || result.status;
+}
+
+// ---- 全局全文搜索 ----
+
+function bindGlobalSearch() {
+  const input = document.getElementById("global-search");
+  const panel = document.getElementById("search-results");
+  const timer = { id: null };
+  const close = () => { panel.hidden = true; };
+  input.addEventListener("input", () => {
+    clearTimeout(timer.id);
+    const query = input.value.trim();
+    if (!query) { close(); panel.replaceChildren(); return; }
+    timer.id = setTimeout(() => runGlobalSearch(query).catch(() => {}), 250);
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") close();
+  });
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".global-search")) close();
+  });
+}
+
+async function runGlobalSearch(query) {
+  const panel = document.getElementById("search-results");
+  let result;
+  try {
+    result = await api(`/api/search?q=${encodeURIComponent(query)}`);
+  } catch (error) {
+    return;
+  }
+  panel.replaceChildren();
+  if (!result.available) {
+    panel.append(element("p", "search-note", t("search.disabled")));
+  } else if (!result.hits.length) {
+    panel.append(element("p", "search-note", t("search.no_results")));
+  } else {
+    for (const hit of result.hits.slice(0, 8)) {
+      const item = element("button", "search-hit");
+      item.type = "button";
+      const head = element("span", "search-hit-head");
+      head.append(
+        makeSourceBadge(hit.source),
+        element("span", "search-hit-title", hit.session_title || t("session.unnamed")),
+      );
+      const snippet = element("span", "search-hit-snippet");
+      snippet.innerHTML = snippetToHtml(hit.snippet);
+      item.append(head, snippet);
+      item.addEventListener("click", () => {
+        panel.hidden = true;
+        openSessionFromSearch(hit);
+      });
+      panel.append(item);
+    }
+    const footer = element("p", "search-note", t("search.result_count", { n: result.hits.length }));
+    panel.append(footer);
+  }
+  panel.hidden = false;
+}
+
+async function openSessionFromSearch(hit) {
+  const known = state.sessions.find(
+    (session) => session.source === hit.source && session.session_id === hit.session_id,
+  );
+  if (known) {
+    showDetails(known, { autoLoadMessages: true });
+    return;
+  }
+  const partial = {
+    source: hit.source,
+    session_id: hit.session_id,
+    title: hit.session_title,
+    workdir: hit.workdir || "",
+    updated_at: hit.updated_at,
+    __autoLoadMessages: true,
+  };
+  showDetails(partial, { autoLoadMessages: true });
+}
+
+// ---- 视图切换 ----
+
+function switchView(view) {
+  document.getElementById("view-timeline").hidden = view !== "timeline";
+  document.getElementById("view-chat").hidden = view !== "chat";
+  for (const tab of document.querySelectorAll(".view-tab")) {
+    const active = tab.dataset.view === view;
+    tab.classList.toggle("is-active", active);
+    tab.setAttribute("aria-selected", String(active));
+  }
+  if (view === "chat") refreshChat().catch(() => {});
+}
+
+// ---- 对话（应用内聊天） ----
+
+const chatState = {
+  agents: [],
+  threads: [],
+  activeThreadId: null,
+  activeTaskId: null,
+  streamingThreadId: null,
+  streaming: false,
+  streamAbort: null,
+};
+
+async function refreshChat() {
+  await loadChatCapabilities();
+  await loadChatThreads();
+}
+
+async function loadChatCapabilities() {
+  let result = { agents: [] };
+  try {
+    result = await api("/api/chat/capabilities");
+  } catch (error) {
+    /* 状态栏已提示 */
+  }
+  chatState.agents = result.agents || [];
+  const select = document.getElementById("chat-agent");
+  select.replaceChildren();
+  const available = chatState.agents.filter((agent) => agent.available);
+  if (!available.length) {
+    const option = new Option(t("chat.no_agent"), "");
+    option.disabled = true;
+    select.append(option);
+    select.disabled = true;
+    return;
+  }
+  select.disabled = false;
+  for (const agent of available) {
+    select.add(new Option(sourceLabel(agent.source), agent.source));
+  }
+}
+
+async function loadChatThreads() {
+  let result = { threads: [] };
+  try {
+    result = await api("/api/chat/threads");
+  } catch (error) {
+    /* 保留现有列表 */
+  }
+  chatState.threads = result.threads || [];
+  const list = document.getElementById("thread-list");
+  list.replaceChildren();
+  document.getElementById("threads-empty").hidden = chatState.threads.length !== 0;
+  for (const thread of chatState.threads) {
+    const item = element("button", "thread-item");
+    item.type = "button";
+    item.dataset.threadId = thread.id;
+    if (thread.id === chatState.activeThreadId) item.classList.add("is-active");
+    item.append(
+      element("span", "thread-title", thread.title || t("chat.title")),
+      element("span", "thread-meta", `${sourceLabel(thread.source)} · ${formatTime(thread.updated_at)}`),
+    );
+    item.addEventListener("click", () => selectThread(thread.id).catch(() => {}));
+    list.append(item);
+  }
+}
+
+async function selectThread(threadId) {
+  chatState.activeThreadId = threadId;
+  let result;
+  try {
+    result = await api(`/api/chat/thread?id=${encodeURIComponent(threadId)}`);
+  } catch (error) {
+    showToast(t("chat.thread_load_failed"));
+    return;
+  }
+  for (const item of document.querySelectorAll(".thread-item")) {
+    item.classList.toggle("is-active", item.dataset.threadId === threadId);
+  }
+  const thread = result.thread;
+  document.getElementById("chat-empty").hidden = true;
+  document.getElementById("chat-title").textContent = thread.title || t("chat.title");
+  document.getElementById("chat-context").textContent =
+    `${sourceLabel(thread.source)} · ${thread.workdir}`;
+  const container = document.getElementById("chat-messages");
+  container.replaceChildren();
+  for (const message of result.messages) {
+    container.append(makeMessageNode(message.role, markdownToHtml(message.text)));
+  }
+  container.scrollTop = container.scrollHeight;
+  document.getElementById("chat-send").disabled = false;
+}
+
+async function createThread() {
+  const select = document.getElementById("chat-agent");
+  const source = select.value;
+  if (!source) {
+    showToast(t("chat.no_agent"));
+    return;
+  }
+  const workdir = document.getElementById("chat-workdir").value.trim();
+  try {
+    const result = await api("/api/chat/new", {
+      method: "POST",
+      body: JSON.stringify({ source, workdir: workdir || null }),
+    });
+    await loadChatThreads();
+    await selectThread(result.thread.id);
+    document.getElementById("chat-input").focus();
+  } catch (error) {
+    showToast(error.payload?.message ? tb(error.payload.message) : t("chat.create_failed"));
+  }
+}
+
+function appendStreamingBubble() {
+  const container = document.getElementById("chat-messages");
+  const bubble = makeMessageNode("assistant", "", { streaming: true });
+  container.append(bubble);
+  container.scrollTop = container.scrollHeight;
+  return bubble;
+}
+
+function handleChatEvent(event) {
+  const container = document.getElementById("chat-messages");
+  if (event.type === "text" && event.text) {
+    let bubble = container.querySelector(".chat-msg.is-streaming:last-of-type");
+    if (!bubble) bubble = appendStreamingBubble();
+    const body = bubble.querySelector(".md-body");
+    const text = (body.dataset.raw || "") + (body.dataset.raw ? "\n\n" : "") + event.text;
+    body.dataset.raw = text;
+    body.innerHTML = markdownToHtml(text);
+    container.scrollTop = container.scrollHeight;
+    return;
+  }
+  if (event.type === "error") {
+    const bubble = container.querySelector(".chat-msg.is-streaming:last-of-type");
+    if (bubble) bubble.classList.remove("is-streaming");
+    const note = element("div", "chat-error", event.text || t("chat.agent_error"));
+    container.append(note);
+    container.scrollTop = container.scrollHeight;
+    return;
+  }
+  if (event.type === "done") {
+    const bubble = container.querySelector(".chat-msg.is-streaming:last-of-type");
+    if (bubble) bubble.classList.remove("is-streaming");
+  }
+}
+
+function setStreaming(streaming) {
+  chatState.streaming = streaming;
+  document.getElementById("chat-send").disabled = streaming;
+  document.getElementById("chat-stop").hidden = !streaming;
+}
+
+async function sendPrompt() {
+  const input = document.getElementById("chat-input");
+  const prompt = input.value.trim();
+  if (!prompt || !chatState.activeThreadId || chatState.streaming) return;
+  setStreaming(true);
+  chatState.streamingThreadId = chatState.activeThreadId;
+  const container = document.getElementById("chat-messages");
+  container.append(makeMessageNode("user", markdownToHtml(prompt)));
+  container.scrollTop = container.scrollHeight;
+  input.value = "";
+  let taskId = null;
+  try {
+    const result = await api("/api/chat/send", {
+      method: "POST",
+      body: JSON.stringify({ thread_id: chatState.activeThreadId, prompt }),
+    });
+    taskId = result.task_id;
+    chatState.activeTaskId = taskId;
+  } catch (error) {
+    setStreaming(false);
+    chatState.streamingThreadId = null;
+    const message = error.payload?.message ? tb(error.payload.message) : t("chat.send_failed");
+    container.append(element("div", "chat-error", message));
+    return;
+  }
+  const abort = new AbortController();
+  chatState.streamAbort = abort;
+  try {
+    const response = await fetch(`/api/chat/stream?task=${encodeURIComponent(taskId)}`, {
+      headers: { "X-Agent-Trail-Key": apiKey },
+      signal: abort.signal,
+    });
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split("\n\n");
+      buffer = chunks.pop();
+      for (const chunk of chunks) {
+        const line = chunk.split("\n").find((item) => item.startsWith("data: "));
+        if (!line) continue;
+        try {
+          handleChatEvent(JSON.parse(line.slice(6)));
+        } catch (error) { /* 事件行不完整时忽略 */ }
+      }
+    }
+  } catch (error) {
+    if (!abort.signal.aborted) {
+      container.append(element("div", "chat-error", t("chat.stream_failed")));
+    }
+  } finally {
+    setStreaming(false);
+    chatState.streamAbort = null;
+    chatState.streamingThreadId = null;
+    // 服务端在回合结束时才落盘，流结束后拉一次持久化历史。
+    if (chatState.activeThreadId) {
+      selectThread(chatState.activeThreadId).catch(() => {});
+    }
+    loadChatThreads().catch(() => {});
+  }
+}
+
+async function stopChat() {
+  if (!chatState.activeTaskId) return;
+  try {
+    await api("/api/chat/cancel", { method: "POST", body: JSON.stringify({ task_id: chatState.activeTaskId }) });
+    showToast(t("chat.stop_sent"));
+  } catch (error) {
+    showToast(t("chat.stop_failed"));
+  }
+  if (chatState.streamAbort) chatState.streamAbort.abort();
 }
 
 function showError(message) {
@@ -411,6 +848,19 @@ function showToast(message) {
 }
 
 function bindControls() {
+  for (const tab of document.querySelectorAll(".view-tab")) {
+    tab.addEventListener("click", () => switchView(tab.dataset.view));
+  }
+  bindGlobalSearch();
+  document.getElementById("chat-new").addEventListener("click", createThread);
+  document.getElementById("chat-send").addEventListener("click", sendPrompt);
+  document.getElementById("chat-stop").addEventListener("click", stopChat);
+  document.getElementById("chat-input").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      sendPrompt();
+    }
+  });
   document.querySelectorAll("[data-period]").forEach((button) => {
     button.addEventListener("click", () => {
       state.period = button.dataset.period;
@@ -507,6 +957,14 @@ async function initialize() {
   if (urlKey) history.replaceState({}, "", window.location.pathname);
   bindControls();
   await loadStatus();
+  // 工作台能力开关：内容索引/聊天被禁用时收起对应入口。
+  const chatTab = document.querySelector('.view-tab[data-view="chat"]');
+  if (chatTab) chatTab.hidden = !state.workbench.chat_enabled;
+  const searchInput = document.getElementById("global-search");
+  if (!state.workbench.content_enabled) {
+    searchInput.disabled = true;
+    searchInput.placeholder = t("search.disabled_placeholder");
+  }
   await Promise.all([loadFilterOptions(), loadTimeline()]);
   window.setInterval(() => {
     if (!document.hidden) {
