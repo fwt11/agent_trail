@@ -7,6 +7,7 @@ from typing import Any
 from ..models import (
     ActivitySession,
     AdapterStatus,
+    ChatSupport,
     ConversationContent,
     ConversationMessage,
     ResumePlan,
@@ -88,11 +89,7 @@ class CodeBuddyAdapter(BaseAdapter):
         error_count = 0
         for path in paths:
             result = read_jsonl_metadata(
-<<<<<<< HEAD
                 path, {"sessionId", "cwd", "timestamp", "type", "aiTitle", "summary"}
-=======
-                path, {"sessionId", "cwd", "timestamp", "type", "aiTitle"}
->>>>>>> 573792d (AionUI-style workbench: in-app chat, body viewer, full-text search (0.5.0))
             )
             error_count += result.error_count
             records = [item for item in result.records if item.get("timestamp") is not None]
@@ -104,22 +101,10 @@ class CodeBuddyAdapter(BaseAdapter):
                 error_count += 1
                 continue
             session_id = str(records[0].get("sessionId") or path.stem)
-<<<<<<< HEAD
+            # `ai-title` / `summary` 记录是 CodeBuddy 自己生成并展示的标题
+            # （真机 2026-11 确认），取最新一条作为原生标题。
             title = _latest_text(result.records, "ai-title", "aiTitle") or _latest_text(
                 result.records, "summary", "summary"
-=======
-            # `ai-title` 记录是 CodeBuddy 自己生成并展示的标题（真机 2026-11
-            # 确认），按 sessionId 匹配后作为原生标题。
-            ai_title = next(
-                (
-                    str(item["aiTitle"])
-                    for item in result.records
-                    if item.get("type") == "ai-title"
-                    and item.get("aiTitle")
-                    and (not item.get("sessionId") or str(item["sessionId"]) == session_id)
-                ),
-                None,
->>>>>>> 573792d (AionUI-style workbench: in-app chat, body viewer, full-text search (0.5.0))
             )
             timestamps = [float(item["timestamp"]) for item in records]
             sessions.append(
@@ -127,13 +112,8 @@ class CodeBuddyAdapter(BaseAdapter):
                     source=self.source,
                     session_id=session_id,
                     workdir=workdir,
-<<<<<<< HEAD
                     title=title,
                     title_source="native" if title else "fallback",
-=======
-                    title=ai_title,
-                    title_source="native" if ai_title else "fallback",
->>>>>>> 573792d (AionUI-style workbench: in-app chat, body viewer, full-text search (0.5.0))
                     created_at=to_utc_iso(min(timestamps)),
                     updated_at=to_utc_iso(max(timestamps)),
                     source_locator=str(path),
@@ -165,6 +145,12 @@ class CodeBuddyAdapter(BaseAdapter):
             args=("--resume", session.resume_ref),
             workdir=session.workdir,
         )
+
+    def chat_support(self) -> ChatSupport | None:
+        # ACP 主路径（`codebuddy --acp`，官方 registry 确认，用户已在 Zed
+        # 实测可用）；one-shot 回退为 CC 风格 -p，argv 传 prompt 封在
+        # Windows 安全值。
+        return ChatSupport(executable="codebuddy", max_prompt_chars=8000)
 
     def read_messages(self, session: ActivitySession) -> ConversationContent | None:
         # 正文就在 source_locator 指向的项目 JSONL 里：type=="message" 且

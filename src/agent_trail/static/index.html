@@ -120,14 +120,6 @@
     <aside class="chat-sidebar">
       <section class="chat-new">
         <button id="chat-new" class="button button-accent" type="button" data-i18n="chat.new">新建对话</button>
-        <label class="field">
-          <span data-i18n="chat.agent">Agent</span>
-          <select id="chat-agent"></select>
-        </label>
-        <label class="field">
-          <span data-i18n="chat.workdir">工作目录</span>
-          <input id="chat-workdir" type="text" spellcheck="false" autocomplete="off" data-i18n-attr="placeholder:chat.workdir_placeholder">
-        </label>
       </section>
       <section class="chat-threads-section" aria-labelledby="threads-heading">
         <h2 id="threads-heading" class="section-title" data-i18n="chat.threads">对话线程</h2>
@@ -135,29 +127,62 @@
         <p id="threads-empty" class="thread-empty" data-i18n="chat.threads_empty">还没有对话。选一个 Agent 开始。</p>
       </section>
     </aside>
-    <section class="chat-area" aria-labelledby="chat-title">
-      <header class="chat-header" id="chat-header">
+    <section class="chat-area is-start" aria-labelledby="chat-title" id="chat-area">
+      <header class="chat-header" id="chat-header" hidden>
         <div>
           <p class="eyebrow">CONVERSATION</p>
           <h2 id="chat-title" data-i18n="chat.title">对话</h2>
         </div>
         <p id="chat-context" class="chat-context"></p>
       </header>
-      <div id="chat-empty" class="chat-empty">
-        <span class="empty-mark" aria-hidden="true">⌘</span>
-        <h3 data-i18n="chat.empty_title">在本地直接和 Agent 对话</h3>
-        <p data-i18n="chat.empty_text">选择左侧的 Agent 与工作目录，新建一个对话线程。消息流经本机，不经过任何服务器。</p>
+      <div id="chat-start" class="chat-start">
+        <h2 class="start-greeting" data-i18n="chat.greeting">你好，今天从哪件事开始？</h2>
+        <div id="agent-pills" class="agent-pills" role="group" aria-label="选择 Agent" data-i18n-attr="aria-label:chat.agent"></div>
+        <p class="start-hint" data-i18n="chat.start_hint">消息流经本机，不经过任何服务器；线程会自动保存。</p>
       </div>
-      <div id="chat-messages" class="chat-messages" aria-live="polite"></div>
+      <div id="chat-approvals" class="chat-approvals"></div>
+      <div id="chat-messages" class="chat-messages" aria-live="polite" hidden></div>
       <footer class="composer">
         <textarea id="chat-input" rows="3" placeholder="…" data-i18n-attr="placeholder:chat.input_placeholder" maxlength="60000"></textarea>
         <div class="composer-actions">
+          <div id="chat-config" class="config-inline" hidden></div>
           <button id="chat-stop" class="button button-danger" type="button" hidden data-i18n="chat.stop">停止</button>
-          <button id="chat-send" class="button button-accent" type="button" data-i18n="chat.send">发送</button>
+          <button id="chat-send" class="button button-accent composer-send" type="button" data-i18n="chat.send">发送</button>
         </div>
       </footer>
+      <button id="workdir-toggle" class="workdir-line" type="button" data-i18n="chat.work_in_project">▤ 在项目中工作</button>
+      <div id="workdir-row" class="workdir-row" hidden>
+        <span class="workdir-label" data-i18n="chat.workdir">工作目录</span>
+        <input id="chat-workdir" type="text" spellcheck="false" autocomplete="off" data-i18n-attr="placeholder:chat.workdir_placeholder">
+        <button id="fs-browse" class="chip-toggle" type="button" data-i18n="fs.browse">📁 浏览…</button>
+      </div>
+      <div id="chat-suggestions" class="chat-suggestions">
+        <p class="section-title" data-i18n="chat.suggestions_heading">试试这些指令</p>
+        <button type="button" class="suggestion" data-prompt-key="chat.suggestion_1"></button>
+        <button type="button" class="suggestion" data-prompt-key="chat.suggestion_2"></button>
+        <button type="button" class="suggestion" data-prompt-key="chat.suggestion_3"></button>
+      </div>
     </section>
   </main>
+
+  <dialog id="fs-dialog" class="fs-dialog" aria-labelledby="fs-title">
+    <div class="dialog-topline">
+      <h3 id="fs-title" class="section-title" data-i18n="fs.pick_title">选择工作目录</h3>
+      <button id="fs-close" class="text-button" type="button" data-i18n="dialog.close">关闭</button>
+    </div>
+    <div class="fs-quick">
+      <button id="fs-home" class="chip-toggle" type="button" data-i18n="fs.home">⌂ 主目录</button>
+      <div id="fs-recents" class="fs-recents"></div>
+    </div>
+    <div class="fs-pathbar">
+      <button id="fs-up" class="chip-toggle" type="button" title=".." aria-label="..">↑</button>
+      <code id="fs-current" class="fs-current"></code>
+    </div>
+    <div id="fs-list" class="fs-list" tabindex="0"></div>
+    <div class="fs-actions">
+      <button id="fs-choose" class="button button-accent" type="button" data-i18n="fs.choose">选择当前目录</button>
+    </div>
+  </dialog>
 
   <dialog id="session-dialog" class="session-dialog" aria-labelledby="detail-title">
     <div class="dialog-topline">

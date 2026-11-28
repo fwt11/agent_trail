@@ -172,5 +172,6 @@ def main(argv: list[str] | None = None) -> int:
                 scheduler.join(timeout=5)
                 if watcher is not None:
                     watcher.stop()
+                chat.close_all()
                 server.stop()
     return 0

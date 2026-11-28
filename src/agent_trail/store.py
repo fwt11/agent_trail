@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
 from .models import ActivitySession, ChatMessage, ChatThread, ConversationMessage, SearchHit, SessionFilter
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 _COLUMNS = (
     "source",
@@ -135,6 +141,33 @@ class LocalStore:
         )
         self._connection.execute(
             "CREATE INDEX IF NOT EXISTS chat_messages_thread ON chat_messages(thread_id, id)"
+        )
+        # ACP 通道（0.6.0）：线程级模式/模型/思考强度 + ACP 会话引用。
+        # 旧库追加列，存在即跳过（SQLite 无 ADD COLUMN IF NOT EXISTS）。
+        for column in ("mode", "model", "thinking", "acp_session_id", "settings_json"):
+            try:
+                self._connection.execute(
+                    f"ALTER TABLE chat_threads ADD COLUMN {column} TEXT"
+                )
+            except sqlite3.OperationalError:
+                pass  # 列已存在
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_approvals (
+                id TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                kind TEXT,
+                options_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                option_id TEXT,
+                created_at TEXT NOT NULL,
+                decided_at TEXT
+            )
+            """
+        )
+        self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS chat_approvals_thread ON chat_approvals(thread_id, status)"
         )
         self._fts_available = self._try_create_fts()
         self._connection.commit()
@@ -383,8 +416,9 @@ class LocalStore:
     def create_thread(self, thread: ChatThread) -> None:
         with self._lock, self._connection:
             self._connection.execute(
-                "INSERT INTO chat_threads (id, source, title, workdir, created_at, updated_at, session_ref) "
-                "VALUES (?,?,?,?,?,?,?)",
+                "INSERT INTO chat_threads (id, source, title, workdir, created_at, updated_at, "
+                "session_ref, mode, model, thinking, acp_session_id, settings_json) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     thread.id,
                     thread.source,
@@ -393,13 +427,19 @@ class LocalStore:
                     thread.created_at,
                     thread.updated_at,
                     thread.session_ref,
+                    thread.mode,
+                    thread.model,
+                    thread.thinking,
+                    thread.acp_session_id,
+                    json.dumps(thread.config, ensure_ascii=False) if thread.config else None,
                 ),
             )
 
     def list_threads(self, limit: int = 100) -> list[ChatThread]:
         with self._lock:
             rows = self._connection.execute(
-                "SELECT id, source, title, workdir, created_at, updated_at, session_ref "
+                "SELECT id, source, title, workdir, created_at, updated_at, session_ref, "
+                "mode, model, thinking, acp_session_id, settings_json "
                 "FROM chat_threads ORDER BY updated_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
@@ -408,7 +448,8 @@ class LocalStore:
     def get_thread(self, thread_id: str) -> ChatThread | None:
         with self._lock:
             row = self._connection.execute(
-                "SELECT id, source, title, workdir, created_at, updated_at, session_ref "
+                "SELECT id, source, title, workdir, created_at, updated_at, session_ref, "
+                "mode, model, thinking, acp_session_id, settings_json "
                 "FROM chat_threads WHERE id=?",
                 (thread_id,),
             ).fetchone()
@@ -443,6 +484,52 @@ class LocalStore:
                 "UPDATE chat_threads SET session_ref=? WHERE id=?", (session_ref, thread_id)
             )
 
+    def list_recent_workdirs(self, limit: int = 8) -> list[dict]:
+        """时间线里最近活动过的项目目录（文件夹选择器的快捷入口）。"""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT workdir, MAX(updated_at) AS last_at FROM sessions "
+                "GROUP BY workdir_normalized ORDER BY last_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [{"workdir": row[0], "last_at": row[1]} for row in rows]
+
+    def set_thread_settings(self, thread_id: str, values: dict[str, str]) -> None:
+        """更新线程的 ACP 配置选择（通用键值，键为各 agent 的 configOption id）。"""
+        if not values:
+            return
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT settings_json FROM chat_threads WHERE id=?", (thread_id,)
+            ).fetchone()
+            current = {}
+            if row is not None and row[0]:
+                try:
+                    current = json.loads(row[0])
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    current = {}
+            current.update(values)
+            merged = json.dumps(current, ensure_ascii=False)
+        assignments: list[str] = ["settings_json=?"]
+        parameters: list[object] = [merged]
+        for key in ("mode", "model", "thinking"):
+            if key in values:
+                assignments.append(f"{key}=?")
+                parameters.append(values[key] or None)
+        parameters.append(thread_id)
+        with self._lock, self._connection:
+            self._connection.execute(
+                f"UPDATE chat_threads SET {', '.join(assignments)} WHERE id=?",
+                parameters,
+            )
+
+    def set_thread_acp_session(self, thread_id: str, acp_session_id: str | None) -> None:
+        with self._lock, self._connection:
+            self._connection.execute(
+                "UPDATE chat_threads SET acp_session_id=? WHERE id=?",
+                (acp_session_id, thread_id),
+            )
+
     def rename_thread(self, thread_id: str, title: str, updated_at: str) -> None:
         with self._lock, self._connection:
             self._connection.execute(
@@ -460,7 +547,51 @@ class LocalStore:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             session_ref=row["session_ref"],
+            mode=row["mode"],
+            model=row["model"],
+            thinking=row["thinking"],
+            acp_session_id=row["acp_session_id"],
+            config=json.loads(row["settings_json"]) if row["settings_json"] else {},
         )
+
+    # ---- ACP 工具审批 ----
+
+    def create_approval(self, approval_id: str, thread_id: str, title: str, kind: str, options_json: str) -> None:
+        with self._lock, self._connection:
+            self._connection.execute(
+                "INSERT INTO chat_approvals (id, thread_id, title, kind, options_json, "
+                "status, created_at) VALUES (?,?,?,?,?,?,?)",
+                (approval_id, thread_id, title, kind, options_json, "pending", _utc_now()),
+            )
+
+    def list_pending_approvals(self, thread_id: str) -> list[dict]:
+        import json as _json
+
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT id, thread_id, title, kind, options_json, created_at "
+                "FROM chat_approvals WHERE thread_id=? AND status='pending' ORDER BY created_at",
+                (thread_id,),
+            ).fetchall()
+            return [
+                {
+                    "id": row[0],
+                    "thread_id": row[1],
+                    "title": row[2],
+                    "kind": row[3],
+                    "options": _json.loads(row[4]),
+                    "created_at": row[5],
+                }
+                for row in rows
+            ]
+
+    def resolve_approval(self, approval_id: str, option_id: str | None, timeout: bool = False) -> None:
+        status = "timeout" if timeout else "decided"
+        with self._lock, self._connection:
+            self._connection.execute(
+                "UPDATE chat_approvals SET status=?, option_id=?, decided_at=? WHERE id=?",
+                (status, option_id, _utc_now(), approval_id),
+            )
 
     @staticmethod
     def _escape_like(value: str) -> str:

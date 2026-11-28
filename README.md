@@ -36,13 +36,13 @@
 
 | Agent | 时间线 | 正文查看 | 应用内对话 | 回到原会话 | 说明 |
 | --- | :-: | :-: | :-: | :-: | --- |
-| Kimi Code | ✅ | ✅ | ✅ | ✅ | 对话 `kimi -p --output-format stream-json`（真机验证，支持 `--session` 续聊）；恢复 `kimi --session <id>` |
-| ZCode | ✅ | ✅ | ➖ | ➖ | 正文读 CLI 库 message/part 表（真机确认）；桌面版暂无可验证的无头 CLI，深链未验证 |
-| MiniMax Code | ✅ | ✅ | ➖ | ✅ | 正文读 `local_runtime_message_rows`（msg_type=1 展示消息）；恢复 `mcode --session <id>` 真机验证 |
-| CodeBuddy | ✅ | ✅ | ➖ | ✅ | 正文读项目 JSONL；`ai-title` 记录作为原生标题；恢复 `codebuddy --resume <id>` 真机验证 |
-| OpenCode | ✅ | ✅ | ✅ | ✅ | 对话 `opencode run`；恢复 `opencode --session <id>`，真机验证 |
-| Codex | ✅ | ✅ | ✅ | ➖ | 对话 `codex exec`；恢复需要目录信任决策，未授权验证 |
-| Claude Code | ⚠️ | ✅ | ✅ | ➖ | 元数据/正文为实验性解析；对话 `claude -p`（prompt 经 stdin） |
+| Kimi Code | ✅ | ✅ | ✅ | ✅ | **ACP 主通道**（`kimi acp`，真机全能力实证：流式/思考流/工具步骤/模型与思考强度与模式切换/多轮上下文/会话恢复）；恢复 `kimi --session <id>` |
+| ZCode | ✅ | ✅ | ➖ | ➖ | 正文读 CLI 库 message/part 表（真机确认）；内嵌的是 ACP 客户端 SDK，未发现服务端入口；深链未验证 |
+| MiniMax Code | ✅ | ✅ | ✅ | ✅ | **ACP 主通道**（`mcode acp`，官方文档确认 + 客户端链路已验证；本机未装 CLI，真机待验）；正文读 `local_runtime_message_rows`；恢复 `mcode --session <id>` |
+| CodeBuddy | ✅ | ✅ | ✅ | ✅ | **ACP 主通道**（`codebuddy --acp`，官方 ACP registry 确认，已在 Zed 实测可用；本机未装 CLI，真机待验）；正文读项目 JSONL；`ai-title` 作原生标题；恢复 `codebuddy --resume <id>` |
+| OpenCode | ✅ | ✅ | ✅ | ✅ | **ACP 主通道**（`opencode acp`，v2.4.2 原生支持）；恢复 `opencode --session <id>`，真机验证 |
+| Codex | ✅ | ✅ | ✅ | ➖ | **ACP 主通道**经官方适配器 `@agentclientprotocol/codex-acp`（需 Node）；one-shot `codex exec` 回退；恢复需目录信任决策 |
+| Claude Code | ⚠️ | ✅ | ✅ | ➖ | **ACP 主通道**经官方适配器 `claude-agent-acp`（Anthropic/Zed/JetBrains，二进制分发，需安装）；one-shot `claude -p`（partial 真流式）回退 |
 | Pi | ✅ | ✅ | ➖ | ➖ | 正文读会话 JSONL；恢复未验证 |
 | DeepSeek Harness | ✅ | ➖ | ➖ | ➖ | 会话正文是 zstd 压缩格式，零依赖原则下不解析；恢复未验证 |
 
@@ -146,8 +146,9 @@ claude / codex / opencode ─▶ ChatManager（argv 白名单）─▶ 子进程
 
 ## 已知限制
 
+- 应用内对话走 ACP 通道：Kimi Code（真机验证）与 MiniMax Code（官方文档确认）原生支持；Claude Code / Codex 经 npm 适配器接入（Phase 2，需 Node）；CodeBuddy 官方称兼容 ACP 但入口未验证；ZCode 未发现 ACP 服务端入口
+- 交互审批（允许/拒绝卡片）按 ACP `session/request_permission` 协议实现并经合成链路验证；实测 kimi 当前在 default 模式不发起权限请求，触发待上游支持
 - 正文查看支持 Kimi Code、ZCode、MiniMax Code、CodeBuddy、OpenCode、Codex、Claude Code、Pi；DeepSeek Harness 的正文是 zstd 压缩格式，零依赖原则下不解析
-- 应用内对话需要对应 CLI 在 PATH 中（kimi / claude / codex / opencode）；ZCode、CodeBuddy、MiniMax 的桌面/CLI 版暂无可验证的无头模式，只支持"跳回终端"
 - 部分会话只有"未命名会话"，以目录和时间辅助识别
 - 适配器基于当前各工具的本机数据格式，工具升级后可能需要更新
 - "回到工作现场"指原 Agent 会话与目录，不保证恢复未保存的文件或桌面布局

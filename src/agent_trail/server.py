@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import shutil
 import threading
@@ -176,8 +177,20 @@ class LocalServer:
             raise ValueError("invalid workdir")
         if title is not None and (not isinstance(title, str) or len(title) > 200):
             raise ValueError("invalid title")
+        settings = payload.get("settings")
+        if settings is None:
+            settings = {key: payload[key] for key in ("mode", "model", "thinking") if payload.get(key)}
+        if settings is not None and not isinstance(settings, dict):
+            raise ValueError("invalid settings")
+        cleaned: dict[str, str] = {}
+        for key, value in (settings or {}).items():
+            if not isinstance(key, str) or not key or len(key) > 100:
+                raise ValueError("invalid setting key")
+            if not isinstance(value, str) or len(value) > 200:
+                raise ValueError(f"invalid setting value for {key}")
+            cleaned[key] = value
         try:
-            thread = self.chat.create_thread(source, workdir, title)
+            thread = self.chat.create_thread(source, workdir, title, config=cleaned)
         except ChatError as error:
             return 409, {"status": "unavailable", "message": str(error)}
         return 200, {"thread": asdict(thread)}
@@ -209,6 +222,99 @@ class LocalServer:
             raise ValueError("invalid task reference")
         cancelled = self.chat.cancel(task_id)
         return 200, {"status": "cancelled" if cancelled else "unknown_task"}
+
+    def _chat_config(self, query: dict[str, list[str]]) -> dict[str, Any]:
+        thread_id = self._one(query, "thread_id")
+        if not thread_id or len(thread_id) > 128:
+            raise ValueError("invalid thread reference")
+        options = self.chat.thread_config(thread_id) if self.chat is not None else []
+        return {"configOptions": options}
+
+    def _chat_config_defaults(self, query: dict[str, list[str]]) -> dict[str, Any]:
+        source = self._one(query, "source")
+        if not source or len(source) > 100:
+            raise ValueError("invalid source")
+        options = self.chat.source_config(source) if self.chat is not None else []
+        if self.chat is not None and not options:
+            # 无缓存：后台预建会话（选 agent 即取配置），前端稍后重取。
+            self.chat.prefetch_session(source)
+        return {"configOptions": options}
+
+    def _chat_settings(self, payload: Any) -> tuple[int, dict[str, Any]]:
+        if self.chat is None:
+            return 409, {"status": "unavailable", "message": "chat disabled"}
+        if not isinstance(payload, dict):
+            raise ValueError("invalid request")
+        thread_id = payload.get("thread_id")
+        if not isinstance(thread_id, str) or not thread_id or len(thread_id) > 128:
+            raise ValueError("invalid thread reference")
+        values = payload.get("settings")
+        if values is None:
+            # 兼容旧字段：mode/model/thinking 顶层键
+            values = {key: payload[key] for key in ("mode", "model", "thinking") if payload.get(key)}
+        if not isinstance(values, dict) or not values:
+            raise ValueError("invalid settings")
+        cleaned: dict[str, str] = {}
+        for key, value in values.items():
+            if not isinstance(key, str) or not key or len(key) > 100:
+                raise ValueError("invalid setting key")
+            if not isinstance(value, str) or len(value) > 200:
+                raise ValueError(f"invalid setting value for {key}")
+            cleaned[key] = value
+        try:
+            self.chat.set_thread_settings(thread_id, cleaned)
+        except ChatError as error:
+            return 409, {"status": "unavailable", "message": str(error)}
+        return 200, {"status": "ok"}
+
+    def _chat_approvals(self, query: dict[str, list[str]]) -> dict[str, Any]:
+        thread_id = self._one(query, "thread_id")
+        if not thread_id or len(thread_id) > 128:
+            raise ValueError("invalid thread reference")
+        pending = self.chat.pending_approvals(thread_id) if self.chat is not None else []
+        return {"approvals": pending}
+
+    def _fs_list(self, query: dict[str, list[str]]) -> dict[str, Any]:
+        """文件夹选择器的服务端目录浏览（本机 + 令牌已授权）。"""
+        raw = self._one(query, "path")
+        path = Path(raw).expanduser() if raw else Path.home()
+        if not path.is_absolute():
+            path = Path.home() / path
+        path = Path(os.path.normpath(str(path)))
+        if not path.is_dir():
+            raise ValueError("not a directory")
+        entries = []
+        try:
+            for child in sorted(path.iterdir(), key=lambda item: item.name.lower()):
+                try:
+                    if child.is_dir():
+                        entries.append({"name": child.name, "path": str(child)})
+                except OSError:
+                    continue
+        except OSError as error:
+            raise ValueError(f"unreadable directory: {error}") from error
+        parent = path.parent if path.parent != path else None
+        return {
+            "path": str(path),
+            "parent": str(parent) if parent else None,
+            "home": str(Path.home()),
+            "recents": self.store.list_recent_workdirs(8),
+            "entries": entries[:400],
+        }
+
+    def _chat_approval_decision(self, payload: Any) -> tuple[int, dict[str, Any]]:
+        if self.chat is None:
+            return 409, {"status": "unavailable", "message": "chat disabled"}
+        if not isinstance(payload, dict):
+            raise ValueError("invalid request")
+        approval_id = payload.get("id")
+        if not isinstance(approval_id, str) or not approval_id or len(approval_id) > 128:
+            raise ValueError("invalid approval reference")
+        option_id = payload.get("option_id")
+        if option_id is not None and (not isinstance(option_id, str) or len(option_id) > 200):
+            raise ValueError("invalid option reference")
+        decided = self.chat.decide_approval(approval_id, option_id)
+        return 200, {"status": "decided" if decided else "unknown_approval"}
 
     def _resume(self, payload: Any) -> tuple[int, dict[str, Any]]:
         if not isinstance(payload, dict):
@@ -303,6 +409,14 @@ class _RequestHandler(BaseHTTPRequestHandler):
                 self._json(200, self.app._chat_threads())
             elif path == "/api/chat/thread":
                 self._json(200, self.app._chat_thread(parse_qs(urlsplit(self.path).query)))
+            elif path == "/api/chat/config":
+                self._json(200, self.app._chat_config(parse_qs(urlsplit(self.path).query)))
+            elif path == "/api/chat/config-defaults":
+                self._json(200, self.app._chat_config_defaults(parse_qs(urlsplit(self.path).query)))
+            elif path == "/api/chat/approvals":
+                self._json(200, self.app._chat_approvals(parse_qs(urlsplit(self.path).query)))
+            elif path == "/api/fs/list":
+                self._json(200, self.app._fs_list(parse_qs(urlsplit(self.path).query)))
             elif path == "/api/chat/stream":
                 self._chat_stream(parse_qs(urlsplit(self.path).query))
             elif path == "/":
@@ -330,11 +444,13 @@ class _RequestHandler(BaseHTTPRequestHandler):
             self._json(200, self.app._status())
         elif path == "/api/resume":
             self._post_json(path, self.app._resume, 8192)
-        elif path in ("/api/chat/new", "/api/chat/send", "/api/chat/cancel"):
+        elif path in ("/api/chat/new", "/api/chat/send", "/api/chat/cancel", "/api/chat/settings", "/api/chat/approvals/decision"):
             handlers = {
                 "/api/chat/new": self.app._chat_new,
                 "/api/chat/send": self.app._chat_send,
                 "/api/chat/cancel": self.app._chat_cancel,
+                "/api/chat/settings": self.app._chat_settings,
+                "/api/chat/approvals/decision": self.app._chat_approval_decision,
             }
             self._post_json(path, handlers[path], CHAT_BODY_MAX)
         else:

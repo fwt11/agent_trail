@@ -117,11 +117,23 @@ class ChatSupport:
 
 @dataclass(frozen=True)
 class ChatEvent:
-    """聊天子进程 stdout 的一步推进；done/error 为终止事件。"""
+    """聊天子进程/ACP 会话的一步推进；done/error 为终止事件。
 
-    type: Literal["text", "tool", "done", "error"]
+    replace=True 表示 text 是"到目前为止的完整内容"（如 codex 的
+    item.updated 累积事件），应整段替换而非追加。
+    delta=True 表示 text 是同一条消息内的增量分片（claude partial /
+    ACP agent_message_chunk），拼接时不加分隔符。
+    thought = ACP agent_thought_chunk（思考流）；tool = 工具步骤；
+    config = 会话配置清单（ACP configOptions）。
+    """
+
+    type: Literal["text", "thought", "tool", "done", "error", "segment_end", "config"]
     text: str = ""
     session_ref: str | None = None
+    replace: bool = False
+    delta: bool = False
+    tool: dict | None = None
+    config: list | None = None
 
 
 @dataclass(frozen=True)
@@ -133,6 +145,12 @@ class ChatThread:
     created_at: str
     updated_at: str
     session_ref: str | None = None
+    mode: str | None = None
+    model: str | None = None
+    thinking: str | None = None
+    acp_session_id: str | None = None
+    # 通用配置选择（ACP configOptions 的 id→value，随各 agent 能力而定）
+    config: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

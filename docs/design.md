@@ -259,11 +259,13 @@
 
 | 来源 | 正文载体 | 结论 |
 | --- | --- | --- |
-| Kimi Code | `agents/main/wire.jsonl` + CLI `-p` 无头模式 | 正文✅ 对话✅（`kimi -p --output-format stream-json` 与 `--session` 续聊均真机验证） |
-| ZCode | CLI 库 `message`/`part` 表（synthetic / visibility=model-only 过滤） | 正文✅；桌面版无可验证的无头 CLI（app.asar 中的 `--print` 命中均为打包 elisp 噪声），对话➕暂不支持 |
-| MiniMax Code | `local_runtime_message_rows`（msg_type=1 为回合展示消息，source 限定 api/background-task） | 正文✅；CLI 无头模式未验证，对话暂不支持 |
-| CodeBuddy | 项目 JSONL 的 `message` 记录；`ai-title` 记录提供原生标题 | 正文✅ + scan 标题改进；CLI 未装，对话暂不支持 |
+| Kimi Code | `agents/main/wire.jsonl` + **ACP（`kimi acp`）** | 正文✅ 对话✅（ACP 主通道真机全能力实证；one-shot `-p` 保留为回退） |
+| ZCode | CLI 库 `message`/`part` 表（synthetic / visibility=model-only 过滤） | 正文✅；对话❌——asar 内嵌的是 ACP **客户端** SDK（@zed-industries/agent-client-protocol 协议表与测试代码），未发现服务端入口 |
+| MiniMax Code | `local_runtime_message_rows`（msg_type=1 展示消息） | 正文✅ 对话✅（官方文档确认 `mcode acp` 原生 ACP；客户端链路 stub 验证通过，真机待用户环境） |
+| CodeBuddy | 项目 JSONL 的 `message` 记录；`ai-title` 记录提供原生标题 | 正文✅ 对话⚠️（官方称 2.0 兼容 ACP，入口未验证——本机未装）；恢复 `codebuddy --resume` |
 | Pi | 会话 JSONL 内嵌 message | 正文✅ |
 | DeepSeek Harness | `session.v3.jsonl.zstd`（zstd 压缩） | 正文❌——标准库无 zstd，保持零依赖原则不引入系统依赖，诚实降级 |
 
 原则重申：对话能力只在 CLI 存在且无头模式可验证时声明（"诚实降级"）；正文解析保持只读、防御式、逐行容错。
+
+流式语义（2026-11-28 补充）：SSE 传输层逐事件到达（stub 计时 0s/2s/5s 精确验证）；Claude 经 `--include-partial-messages` 得到 token 级增量（delta 事件，完整消息去重），Codex 的 item.updated 为累积语义（replace 事件），Kimi 无增量事件（真机确认整条输出），由前端打字机渐显与"正在思考"指示器补足观感。`ChatEvent` 以 `replace` / `delta` 标志区分三种拼接语义，持久化按相同规则合并，避免增量分片被当作独立段落。

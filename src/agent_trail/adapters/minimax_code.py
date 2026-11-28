@@ -9,6 +9,7 @@ from pathlib import Path
 from ..models import (
     ActivitySession,
     AdapterStatus,
+    ChatSupport,
     ConversationContent,
     ConversationMessage,
     ResumePlan,
@@ -155,6 +156,11 @@ class MiniMaxCodeAdapter(BaseAdapter):
             kind="error" if temporary else "incompatible",
             message="database temporarily unavailable" if temporary else "database schema incompatible",
         )
+
+    def chat_support(self) -> ChatSupport | None:
+        # ACP 主路径（`mcode acp`，官方文档确认）；argv 传 prompt 的
+        # one-shot 回退封在 Windows 安全值。
+        return ChatSupport(executable="mcode", max_prompt_chars=8000)
 
     def resume_plan(self, session: ActivitySession) -> ResumePlan:
         if session.source_missing or session.resume_kind != "cli" or not session.resume_ref:

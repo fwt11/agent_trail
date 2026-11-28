@@ -107,12 +107,12 @@ jobs:
         shell: bash
         run: |
           python - <<'PY'
-          import json, os, shutil, subprocess, sys, tempfile, time
+          import json, os, shutil, sqlite3, subprocess, sys, tempfile, time
           import urllib.error, urllib.request
           from datetime import datetime, timezone
           from pathlib import Path
 
-          from agent_trail.adapters.chat_parsers import CHAT_BACKENDS, _claude_parse, _codex_parse, _opencode_parse, _kimi_parse
+          from agent_trail.adapters.chat_parsers import CHAT_BACKENDS, _opencode_parse, _kimi_parse
           from agent_trail.adapters.base import BaseAdapter
           from agent_trail.adapters import default_adapters
           from agent_trail.adapters.kimi_code import KimiCodeAdapter
@@ -213,16 +213,44 @@ jobs:
           assert codex_argv[:4] == ["codex", "exec", "resume", "sid9"] and "--json" in codex_argv
           assert CHAT_BACKENDS["codex"].build_argv(None) == ["codex", "exec", "--json"]
           assert CHAT_BACKENDS["codex"].prompt_via == "argv"
-          assert _codex_parse('{"type":"thread.started","thread_id":"thr1"}').session_ref == "thr1"
-          assert _codex_parse('{"type":"item.completed","item":{"item_type":"agent_message","text":"hi"}}').text == "hi"
-          assert _codex_parse("not json") is None
-          assert _claude_parse('{"type":"result","result":"done","session_id":"s1"}').type == "done"
-          assert _claude_parse('{"type":"assistant","message":{"content":[{"type":"text","text":"回答"}]}}').text == "回答"
+          # claude：partial 增量 + 完整消息去重（有状态解析器，每回合独立）
+          assert "--include-partial-messages" in CHAT_BACKENDS["claude-code"].build_argv(None)
+          claude_parse = CHAT_BACKENDS["claude-code"].create_parser()
+          delta = claude_parse('{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"增量"}}}')
+          assert delta is not None and delta.text == "增量" and delta.delta
+          boundary = claude_parse('{"type":"assistant","message":{"content":[{"type":"text","text":"增量全文"}]}}')
+          assert boundary is not None and boundary.type == "segment_end"
+          result = claude_parse('{"type":"result","result":"done","session_id":"s1"}')
+          assert result.type == "done" and result.session_ref == "s1"
+          claude_parse2 = CHAT_BACKENDS["claude-code"].create_parser()
+          only_full = claude_parse2('{"type":"assistant","message":{"content":[{"type":"text","text":"完整回复"}]}}')
+          assert only_full is not None and only_full.text == "完整回复"
+          assert claude_parse2("not json") is None
+          # codex：item.updated 累积 + item.completed 收口；旧版无增量时照常输出
+          codex_parse = CHAT_BACKENDS["codex"].create_parser()
+          assert codex_parse('{"type":"thread.started","thread_id":"thr1"}').session_ref == "thr1"
+          upd = codex_parse('{"type":"item.updated","item":{"item_type":"agent_message","text":"部分"}}')
+          assert upd.replace and upd.text == "部分"
+          done_item = codex_parse('{"type":"item.completed","item":{"item_type":"agent_message","text":"部分全文"}}')
+          assert done_item.replace and done_item.text == "部分全文"
+          codex_parse("not json") is None
+          codex_parse2 = CHAT_BACKENDS["codex"].create_parser()
+          legacy = codex_parse2('{"type":"item.completed","item":{"item_type":"agent_message","text":"hi"}}')
+          assert legacy is not None and legacy.text == "hi" and not legacy.replace
           assert _opencode_parse("纯文本").type == "text"
           # prompt 不进 argv（stdin 后端）/ 进 argv（argv 后端）由 ChatManager 负责
           assert CHAT_BACKENDS["kimi-code"].build_argv("session_x") == [
               "kimi", "--session", "session_x", "--output-format", "stream-json", "-p",
           ]
+          # ACP 接入：原生四家固定命令；claude/codex 依赖环境（builder）
+          assert CHAT_BACKENDS["kimi-code"].resolve_acp_command() == ("kimi", "acp")
+          assert CHAT_BACKENDS["minimax-code"].resolve_acp_command() == ("mcode", "acp")
+          assert CHAT_BACKENDS["opencode"].resolve_acp_command() == ("opencode", "acp")
+          assert CHAT_BACKENDS["codebuddy"].resolve_acp_command() == ("codebuddy", "--acp")
+          claude_acp = CHAT_BACKENDS["claude-code"].resolve_acp_command()
+          assert claude_acp is None or claude_acp[0] == "claude-agent-acp"
+          codex_acp = CHAT_BACKENDS["codex"].resolve_acp_command()
+          assert codex_acp is None or codex_acp[0] in ("codex-acp", "npx")
           assert _kimi_parse('{"role":"assistant","content":"收到"}').text == "收到"
           assert _kimi_parse('{"role":"meta","type":"session.resume_hint","session_id":"s1"}').session_ref == "s1"
           assert _kimi_parse('{"role":"meta","type":"system.version","version":"2.8.1"}') is None
@@ -333,7 +361,7 @@ jobs:
                       "echo '{\"type\":\"item.completed\",\"item\":{\"item_type\":\"agent_message\",\"text\":\"stub reply\"}}'\n",
                       encoding="utf-8")
                   stub.chmod(0o755)
-                  env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+                  os.environ["PATH"] = f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
                   store = LocalStore(Path(tmp) / "i.sqlite")
                   adapters = default_adapters(Path.home())
                   ScanService(store, adapters).scan_all()
@@ -374,6 +402,93 @@ jobs:
               server.stop()
               store.close()
               print("workbench auth boundaries OK")
+
+          # 7) ACP 通道全链路（fake agent：审批往返/思考/工具/多轮/配置应用）
+          if os.name == "posix":
+              with tempfile.TemporaryDirectory() as tmp:
+                  bin_dir = Path(tmp) / "bin"
+                  bin_dir.mkdir()
+                  agent_file = Path(tmp) / "fake_acp_agent.py"
+                  stub = bin_dir / "kimi"
+                  stub.write_text(
+                      "#!/bin/sh\n"
+                      "if [ \"$1\" != \"acp\" ]; then exit 0; fi\n"
+                      f"exec python3 \"{agent_file}\"\n",
+                      encoding="utf-8")
+                  stub.chmod(0o755)
+                  agent_file.write_text(
+                      "import json, sys\n"
+                      "def send(obj):\n"
+                      "    sys.stdout.write(json.dumps(obj) + chr(10)); sys.stdout.flush()\n"
+                      "state = {'thinking': 'max', 'turns': 0, 'decision': None}\n"
+                      "for line in sys.stdin:\n"
+                      "    msg = json.loads(line)\n"
+                      "    rid, method = msg.get('id'), msg.get('method')\n"
+                      "    params = msg.get('params') or {}\n"
+                      "    if method == 'initialize':\n"
+                      "        send({'jsonrpc':'2.0','id':rid,'result':{'protocolVersion':1,'agentCapabilities':{'loadSession':True}}})\n"
+                      "    elif method == 'session/new':\n"
+                      "        options = [{'id': 'thinking', 'category': 'thought_level', 'currentValue': state['thinking'], 'options': [{'value': 'low', 'name': 'L'}, {'value': 'max', 'name': 'M'}]}, {'id': 'mode', 'category': 'mode', 'currentValue': 'default', 'options': [{'value': 'default', 'name': 'D'}]}]\n"
+                      "        send({'jsonrpc': '2.0', 'id': rid, 'result': {'sessionId': 'sess_fake_1', 'configOptions': options}})\n"
+                      "    elif method == 'session/set_config_option':\n"
+                      "        state[params['configId']] = params['value']\n"
+                      "        send({'jsonrpc':'2.0','id':rid,'result':{}})\n"
+                      "    elif method == 'session/prompt':\n"
+                      "        state['turns'] += 1\n"
+                      "        if state['turns'] == 1:\n"
+                      "            perm_options = [{'optionId': 'allow', 'name': 'allow', 'kind': 'allow_once'}, {'optionId': 'deny', 'name': 'deny', 'kind': 'reject_once'}]\n"
+                      "            send({'jsonrpc': '2.0', 'id': 900, 'method': 'session/request_permission', 'params': {'toolCall': {'toolCallId': 'c1', 'title': 'Bash', 'kind': 'execute'}, 'options': perm_options}})\n"
+                      "            for line2 in sys.stdin:\n"
+                      "                m2 = json.loads(line2)\n"
+                      "                if m2.get('id') == 900:\n"
+                      "                    state['decision'] = m2['result']['outcome']['optionId']\n"
+                      "                    break\n"
+                      "            send({'jsonrpc':'2.0','method':'session/update','params':{'sessionId':params['sessionId'],'update':{'sessionUpdate':'tool_call','toolCallId':'c1','title':'Bash','kind':'execute','status':'pending'}}})\n"
+                      "            send({'jsonrpc':'2.0','method':'session/update','params':{'sessionId':params['sessionId'],'update':{'sessionUpdate':'tool_call_update','toolCallId':'c1','status':'completed'}}})\n"
+                      "        send({'jsonrpc':'2.0','method':'session/update','params':{'sessionId':params['sessionId'],'update':{'sessionUpdate':'agent_thought_chunk','content':{'type':'text','text':'想'}}}})\n"
+                      "        send({'jsonrpc':'2.0','method':'session/update','params':{'sessionId':params['sessionId'],'update':{'sessionUpdate':'agent_message_chunk','content':{'type':'text','text':'第%d轮 thinking=%s decision=%s' % (state['turns'], state['thinking'], state['decision'])}}}})\n"
+                      "        send({'jsonrpc':'2.0','id':rid,'result':{'stopReason':'end_turn'}})\n"
+                      "    else:\n"
+                      "        send({'jsonrpc':'2.0','id':rid,'error':{'code':-32601,'message':'nf'}})\n",
+                      encoding="utf-8")
+                  os.environ["PATH"] = f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+                  store = LocalStore(Path(tmp) / "i.sqlite")
+                  adapters = default_adapters(Path.home())
+                  manager = ChatManager(store, adapters)
+                  caps = {c["source"]: c for c in manager.capabilities()}
+                  assert caps["kimi-code"]["acp"] is True
+                  thread = manager.create_thread("kimi-code", str(tmp), None)
+                  # 第一轮：触发权限请求 → 模拟 UI 决策"允许"
+                  task_id = manager.start_turn(thread.id, "hello")
+                  turn = manager.subscribe(task_id)
+                  deadline = time.time() + 3
+                  while time.time() < deadline and not manager.pending_approvals(thread.id):
+                      time.sleep(0.05)
+                  pending = manager.pending_approvals(thread.id)
+                  assert pending and pending[0]["title"] == "Bash", pending
+                  assert manager.decide_approval(pending[0]["id"], "allow")
+                  deadline = time.time() + 15
+                  while not turn.is_finished and time.time() < deadline:
+                      time.sleep(0.05)
+                  assert turn.is_finished, "acp turn did not finish"
+                  kinds = [e.get("type") for e in turn.events]
+                  assert "thought" in kinds and "tool" in kinds and "text" in kinds, turn.events
+                  messages = store.thread_messages(thread.id)
+                  assert messages[-1].text == "第1轮 thinking=max decision=allow", messages
+                  assert store.get_thread(thread.id).acp_session_id == "sess_fake_1"
+                  # 第二轮：改思考强度 → 同一会话多轮上下文 + 配置生效
+                  manager.set_thread_settings(thread.id, {"thinking": "low"})
+                  task_id2 = manager.start_turn(thread.id, "again")
+                  turn2 = manager.subscribe(task_id2)
+                  deadline = time.time() + 15
+                  while not turn2.is_finished and time.time() < deadline:
+                      time.sleep(0.05)
+                  assert turn2.is_finished
+                  messages2 = store.thread_messages(thread.id)
+                  assert messages2[-1].text == "第2轮 thinking=low decision=allow", messages2
+                  manager.close_all()
+                  store.close()
+                  print("acp full-loop OK")
 
           print("workbench unit checks OK on", sys.platform)
           PY
