@@ -916,3 +916,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
   font-size: 11px;
   font-weight: 650;
 }
+
+/* 未安装 agent 的置灰 pill */
+.agent-pill:disabled { opacity: .45; cursor: not-allowed; }
+.agent-pill.is-unavailable .tool-mark { filter: grayscale(1); }

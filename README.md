@@ -151,6 +151,7 @@ claude / codex / opencode ─▶ ChatManager（argv 白名单）─▶ 子进程
 ## 已知限制
 
 - 应用内对话走 ACP 通道：Kimi Code（真机验证）与 MiniMax Code（官方文档确认）原生支持；Claude Code / Codex 经 npm 适配器接入（Phase 2，需 Node）；CodeBuddy 官方称兼容 ACP 但入口未验证；ZCode 未发现 ACP 服务端入口
+- 对话/恢复对 CLI 的探测会自动补全常见安装目录（`~/.kimi-code/bin`、`~/.local/bin`、`~/.opencode/bin` 等）——从桌面图标启动（PATH 不含 shell 配置）也能找到 Agent
 - 交互审批（允许/拒绝卡片）按 ACP `session/request_permission` 协议实现并经合成链路验证；实测 kimi 当前在 default 模式不发起权限请求，触发待上游支持
 - 正文查看支持 Kimi Code、ZCode、MiniMax Code、CodeBuddy、OpenCode、Codex、Claude Code、Pi；DeepSeek Harness 的正文是 zstd 压缩格式，零依赖原则下不解析
 - 部分会话只有"未命名会话"，以目录和时间辅助识别

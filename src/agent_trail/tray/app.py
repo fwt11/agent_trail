@@ -963,6 +963,10 @@ def _reexec_with_system_python(argv: list[str], guard: "SingleInstance | None" =
 
 
 def main(argv: list[str] | None = None) -> int:
+    # 桌面启动 PATH 补全：serve 子进程与托盘自身的探测共享
+    from ..pathenv import augment_process_path
+
+    augment_process_path()
     # pythonw（无控制台）下 stdout/stderr 是 None，print 会炸——接到日志文件
     if sys.stdout is None:
         sys.stdout = open(LOG_PATH, "a", encoding="utf-8", errors="replace")

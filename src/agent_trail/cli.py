@@ -12,6 +12,7 @@ from time import monotonic
 
 from .adapters import default_adapters
 from .chat import ChatManager
+from .pathenv import augment_process_path
 from .content import ContentIndexer
 from .models import SessionFilter
 from .scanner import ScanService
@@ -54,6 +55,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # 桌面图标启动的进程 PATH 只有系统默认项，补全 Agent CLI 常见安装
+    # 目录（~/.kimi-code/bin 等），否则控制台找不到任何 Agent。
+    augment_process_path()
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command == "serve":

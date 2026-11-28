@@ -533,6 +533,19 @@ jobs:
           _plan = _upd.upgrade_plan()
           assert _plan is None or (_plan["kind"] in ("pip", "pipx") and _plan["cmd"])
 
+          # 10) 桌面启动 PATH 补全
+          from agent_trail.pathenv import augment_process_path
+          with tempfile.TemporaryDirectory() as tmp:
+              fake_bin = Path(tmp) / "bin"
+              fake_bin.mkdir()
+              fake = fake_bin / "fakecli"
+              fake.write_text("#!/bin/sh\nexit 0\n")
+              fake.chmod(0o755)
+              added = augment_process_path(extra_dirs=(str(fake_bin),))
+              assert str(fake_bin) in added, added
+              assert shutil.which("fakecli") is not None
+              assert augment_process_path(extra_dirs=(str(fake_bin),)) == []  # 幂等
+
           print("workbench unit checks OK on", sys.platform)
           PY
       - name: Smoke test in a fresh venv

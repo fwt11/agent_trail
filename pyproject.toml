@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "session-trail"
-version = "0.6.0"
+version = "0.6.1"
 description = "Local agent workbench: a cross-agent session timeline plus in-app chat with your coding agents, all local-first"
 readme = "README.md"
 license = "MIT"

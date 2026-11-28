@@ -761,30 +761,34 @@ async function loadChatCapabilities() {
   const available = chatState.agents.filter((agent) => agent.available);
   const pills = document.getElementById("agent-pills");
   pills.replaceChildren();
-  if (!available.length) {
-    chatState.selectedAgent = null;
-    pills.append(element("span", "pill-empty", t("chat.no_agent")));
-    updateComposerPlaceholder();
-    return;
-  }
+  // 全量渲染（含未安装的）：置灰展示，用户能看清"有哪些、缺哪些"。
   if (!available.some((agent) => agent.source === chatState.selectedAgent)) {
-    chatState.selectedAgent = available[0].source;
+    chatState.selectedAgent = available[0]?.source ?? null;
   }
-  for (const agent of available) {
+  for (const agent of chatState.agents) {
     const pill = element("button", "agent-pill");
     pill.type = "button";
     pill.dataset.source = agent.source;
-    pill.classList.toggle("is-active", agent.source === chatState.selectedAgent);
+    pill.disabled = !agent.available;
+    const isActive = agent.source === chatState.selectedAgent;
+    pill.classList.toggle("is-active", isActive);
+    if (!agent.available) pill.classList.add("is-unavailable");
+    pill.title = agent.available ? "" : t("chat.agent_missing_hint");
     pill.append(makeToolMark(agent.source), element("span", "", sourceLabel(agent.source)));
-    pill.addEventListener("click", () => {
-      chatState.selectedAgent = agent.source;
-      for (const item of pills.querySelectorAll(".agent-pill")) {
-        item.classList.toggle("is-active", item.dataset.source === agent.source);
-      }
-      updateComposerPlaceholder();
-      loadStartConfig().catch(() => {});
-    });
+    if (agent.available) {
+      pill.addEventListener("click", () => {
+        chatState.selectedAgent = agent.source;
+        for (const item of pills.querySelectorAll(".agent-pill")) {
+          item.classList.toggle("is-active", item.dataset.source === agent.source);
+        }
+        updateComposerPlaceholder();
+        loadStartConfig().catch(() => {});
+      });
+    }
     pills.append(pill);
+  }
+  if (!available.length) {
+    pills.append(element("span", "pill-empty", t("chat.no_agent")));
   }
   updateComposerPlaceholder();
 }
