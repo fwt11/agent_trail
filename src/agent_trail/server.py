@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from .content import ContentIndexer
 
 CHAT_BODY_MAX = 65536
+CHAT_SEND_BODY_MAX = 15 * 1024 * 1024  # 附件 base64 后的总量上限
 
 
 class LocalServer:
@@ -145,8 +146,39 @@ class LocalServer:
             )
         return {"available": True, "fts": self.store.fts_available, "hits": records}
 
+    def _update_status(self) -> dict[str, Any]:
+        """托盘每日检查后的缓存结果（serve 自身不外呼 PyPI）。"""
+        from . import update as _update
+
+        current = _update.current_version()
+        cached = _update.read_cache(Path.home() / ".agent-trail")
+        latest = (cached or {}).get("latest")
+        return {
+            "current": current,
+            "latest": latest,
+            "has_update": _update.has_update(current, latest),
+        }
+
     def _chat_capabilities(self) -> dict[str, Any]:
         return {"agents": self.chat.capabilities() if self.chat is not None else []}
+
+    def _chat_file(self, query: dict[str, list[str]]) -> tuple[bytes, str]:
+        """回显 chat_uploads 下的上传文件（仅限该目录，防任意读取）。"""
+        import mimetypes as _mimetypes
+
+        relative = self._one(query, "name")
+        if not relative or len(relative) > 300 or ".." in relative:
+            raise ValueError("invalid file reference")
+        root = self.chat.uploads_dir if self.chat is not None else None
+        if root is None:
+            raise ValueError("uploads unavailable")
+        target = (root / relative).resolve()
+        if not str(target).startswith(str(root.resolve())):
+            raise ValueError("invalid file reference")
+        if not target.is_file():
+            raise ValueError("file not found")
+        mime = _mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+        return target.read_bytes(), mime
 
     def _chat_threads(self) -> dict[str, Any]:
         return {"threads": [asdict(thread) for thread in self.store.list_threads()]}
@@ -204,10 +236,52 @@ class LocalServer:
         prompt = payload.get("prompt")
         if not isinstance(thread_id, str) or not thread_id or len(thread_id) > 128:
             raise ValueError("invalid thread reference")
-        if not isinstance(prompt, str) or not prompt or len(prompt) > CHAT_BODY_MAX:
+        if not isinstance(prompt, str) or len(prompt) > CHAT_BODY_MAX:
             raise ValueError("invalid prompt")
+        raw_attachments = payload.get("attachments") or []
+        if not isinstance(raw_attachments, list) or len(raw_attachments) > 8:
+            raise ValueError("invalid attachments")
+        import base64 as _base64
+
+        attachments: list[dict] = []
+        total_bytes = 0
+        for att in raw_attachments:
+            if not isinstance(att, dict):
+                raise ValueError("invalid attachment")
+            kind = att.get("kind")
+            name = att.get("name")
+            mime = att.get("mime")
+            if not isinstance(name, str) or not name or len(name) > 200:
+                raise ValueError("invalid attachment name")
+            if mime is not None and (not isinstance(mime, str) or len(mime) > 100):
+                raise ValueError("invalid attachment mime")
+            if kind == "path":
+                # 同机零拷贝：文件浏览器/手输给出真实路径，agent 直读原文件。
+                path_value = att.get("path")
+                if not isinstance(path_value, str) or not path_value or len(path_value) > 1024:
+                    raise ValueError("invalid attachment path")
+                attachments.append({"kind": "path", "name": name, "path": path_value, "mime": mime or ""})
+            elif kind == "upload":
+                # 拖拽/粘贴/跨机：浏览器只有内容，落盘到 chat_uploads/<线程>/。
+                data = att.get("data")
+                if not isinstance(data, str):
+                    raise ValueError("invalid attachment data")
+                try:
+                    decoded = _base64.b64decode(data, validate=True)
+                except Exception as error:
+                    raise ValueError("invalid attachment encoding") from error
+                total_bytes += len(decoded)
+                if total_bytes > 20 * 1024 * 1024:
+                    raise ValueError("attachments exceed 20MB")
+                try:
+                    saved = self.chat.save_upload(thread_id, name, decoded)
+                except ChatError as error:
+                    return 409, {"status": "unavailable", "message": str(error)}
+                attachments.append({"kind": "upload", "name": name, "path": str(saved), "mime": mime or ""})
+            else:
+                raise ValueError("invalid attachment kind")
         try:
-            task_id = self.chat.start_turn(thread_id, prompt)
+            task_id = self.chat.start_turn(thread_id, prompt, attachments=attachments)
         except ChatError as error:
             return 409, {"status": "unavailable", "message": str(error)}
         return 200, {"task_id": task_id}
@@ -275,7 +349,7 @@ class LocalServer:
         return {"approvals": pending}
 
     def _fs_list(self, query: dict[str, list[str]]) -> dict[str, Any]:
-        """文件夹选择器的服务端目录浏览（本机 + 令牌已授权）。"""
+        """文件/文件夹选择器的服务端目录浏览（本机 + 令牌已授权）。"""
         raw = self._one(query, "path")
         path = Path(raw).expanduser() if raw else Path.home()
         if not path.is_absolute():
@@ -283,12 +357,20 @@ class LocalServer:
         path = Path(os.path.normpath(str(path)))
         if not path.is_dir():
             raise ValueError("not a directory")
+        include_files = self._one(query, "files") is not None
         entries = []
         try:
             for child in sorted(path.iterdir(), key=lambda item: item.name.lower()):
                 try:
                     if child.is_dir():
-                        entries.append({"name": child.name, "path": str(child)})
+                        entries.append({"name": child.name, "path": str(child), "is_dir": True})
+                    elif include_files:
+                        entries.append({
+                            "name": child.name,
+                            "path": str(child),
+                            "is_dir": False,
+                            "size": child.stat().st_size,
+                        })
                 except OSError:
                     continue
         except OSError as error:
@@ -417,6 +499,17 @@ class _RequestHandler(BaseHTTPRequestHandler):
                 self._json(200, self.app._chat_approvals(parse_qs(urlsplit(self.path).query)))
             elif path == "/api/fs/list":
                 self._json(200, self.app._fs_list(parse_qs(urlsplit(self.path).query)))
+            elif path == "/api/update/status":
+                self._json(200, self.app._update_status())
+            elif path == "/api/chat/file":
+                content, mime = self.app._chat_file(parse_qs(urlsplit(self.path).query))
+                self.send_response(200)
+                self.send_header("Content-Type", mime)
+                self.send_header("Content-Length", str(len(content)))
+                self.send_header("Cache-Control", "private, max-age=3600")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                self.wfile.write(content)
             elif path == "/api/chat/stream":
                 self._chat_stream(parse_qs(urlsplit(self.path).query))
             elif path == "/":
@@ -444,15 +537,16 @@ class _RequestHandler(BaseHTTPRequestHandler):
             self._json(200, self.app._status())
         elif path == "/api/resume":
             self._post_json(path, self.app._resume, 8192)
-        elif path in ("/api/chat/new", "/api/chat/send", "/api/chat/cancel", "/api/chat/settings", "/api/chat/approvals/decision"):
+        elif path in ("/api/chat/new", "/api/chat/cancel", "/api/chat/settings", "/api/chat/approvals/decision"):
             handlers = {
                 "/api/chat/new": self.app._chat_new,
-                "/api/chat/send": self.app._chat_send,
                 "/api/chat/cancel": self.app._chat_cancel,
                 "/api/chat/settings": self.app._chat_settings,
                 "/api/chat/approvals/decision": self.app._chat_approval_decision,
             }
             self._post_json(path, handlers[path], CHAT_BODY_MAX)
+        elif path == "/api/chat/send":
+            self._post_json(path, self.app._chat_send, CHAT_SEND_BODY_MAX)
         else:
             self._error(404)
 

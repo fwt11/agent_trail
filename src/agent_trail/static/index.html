@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>Agent 足迹 · 找回工作现场</title>
+  <title>Agent 足迹 · 本地 Agent 工作台</title>
   <link rel="stylesheet" href="/styles.css">
   <script src="/i18n.js" defer></script>
   <script src="/app.js" defer></script>
@@ -18,11 +18,12 @@
     </div>
     <div class="topbar-actions">
       <nav id="view-tabs" class="view-tabs" role="tablist" aria-label="视图" data-i18n-attr="aria-label:view.aria">
-        <button type="button" class="view-tab is-active" data-view="timeline" role="tab" aria-selected="true" data-i18n="view.timeline">时间线</button>
-        <button type="button" class="view-tab" data-view="chat" role="tab" aria-selected="false" data-i18n="view.chat">对话</button>
+        <button type="button" class="view-tab" data-view="timeline" role="tab" aria-selected="false" data-i18n="view.timeline">时间线</button>
+        <button type="button" class="view-tab is-active" data-view="chat" role="tab" aria-selected="true" data-i18n="view.chat">对话</button>
       </nav>
       <span class="local-label"><span class="status-dot"></span><span data-i18n="header.local_badge">本地运行 · 元数据索引</span></span>
       <span id="last-scan" class="last-scan" data-i18n="status.not_scanned">尚未扫描</span>
+      <span id="update-badge" class="update-badge" hidden></span>
       <div class="global-search">
         <input id="global-search" type="search" autocomplete="off" maxlength="200" placeholder="…" data-i18n-attr="placeholder:search.placeholder;aria-label:search.aria">
         <div id="search-results" class="search-results" hidden></div>
@@ -37,7 +38,7 @@
     </div>
   </header>
 
-  <main class="shell" id="view-timeline">
+  <main class="shell" id="view-timeline" hidden>
     <aside class="sidebar">
       <section class="intro">
         <p class="eyebrow">PERSONAL WORK MEMORY</p>
@@ -116,7 +117,7 @@
     </section>
   </main>
 
-  <main class="shell shell-chat" id="view-chat" hidden>
+  <main class="shell shell-chat" id="view-chat">
     <aside class="chat-sidebar">
       <section class="chat-new">
         <button id="chat-new" class="button button-accent" type="button" data-i18n="chat.new">新建对话</button>
@@ -143,12 +144,15 @@
       <div id="chat-approvals" class="chat-approvals"></div>
       <div id="chat-messages" class="chat-messages" aria-live="polite" hidden></div>
       <footer class="composer">
+        <div id="chat-attach-list" class="chat-attach-list" hidden></div>
         <textarea id="chat-input" rows="3" placeholder="…" data-i18n-attr="placeholder:chat.input_placeholder" maxlength="60000"></textarea>
         <div class="composer-actions">
+          <button id="chat-attach" class="chip-toggle" type="button" data-i18n="chat.attach">＋ 附件</button>
           <div id="chat-config" class="config-inline" hidden></div>
           <button id="chat-stop" class="button button-danger" type="button" hidden data-i18n="chat.stop">停止</button>
           <button id="chat-send" class="button button-accent composer-send" type="button" data-i18n="chat.send">发送</button>
         </div>
+        <input id="chat-file-input" type="file" multiple hidden>
       </footer>
       <button id="workdir-toggle" class="workdir-line" type="button" data-i18n="chat.work_in_project">▤ 在项目中工作</button>
       <div id="workdir-row" class="workdir-row" hidden>

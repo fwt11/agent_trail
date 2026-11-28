@@ -490,6 +490,49 @@ jobs:
                   store.close()
                   print("acp full-loop OK")
 
+          # 8) 附件：resource_link 构建 + 上传落盘 + 回显防穿越
+          from agent_trail.chat import _content_blocks, save_upload
+          blocks = _content_blocks("看图", [{"kind": "path", "name": "a.png", "path": "/tmp/a.png", "mime": "image/png"}])
+          assert blocks[0] == {"type": "text", "text": "看图"}
+          assert blocks[1]["type"] == "resource_link" and blocks[1]["uri"] == "file:///tmp/a.png"
+          with tempfile.TemporaryDirectory() as tmp:
+              uploads = Path(tmp) / "chat_uploads"
+              saved = save_upload(uploads, "t1", "测试 图.png", b"\x89PNG-data")
+              assert saved.is_file() and saved.parent == uploads / "t1"
+              store = LocalStore(Path(tmp) / "i.sqlite")
+              adapters = default_adapters(Path.home())
+              scanner = ScanService(store, adapters)
+              scanner.scan_all()
+              manager = ChatManager(store, adapters, uploads_dir=Path(tmp))
+              server = LocalServer(store, scanner, chat=manager)
+              base = server.start().split("/?")[0]
+              key = server.key
+              rel = saved.relative_to(Path(tmp)).as_posix()
+              from urllib.parse import quote as _quote
+              req = urllib.request.Request(f"{base}/api/chat/file?name={_quote(rel)}", headers={"X-Agent-Trail-Key": key})
+              assert urllib.request.urlopen(req, timeout=5).read() == b"\x89PNG-data"
+              try:
+                  traversal = urllib.request.Request(f"{base}/api/chat/file?name=../i.sqlite", headers={"X-Agent-Trail-Key": key})
+                  urllib.request.urlopen(traversal, timeout=5)
+              except urllib.error.HTTPError as error:
+                  assert error.code in (400, 403), error.code
+              else:
+                  raise AssertionError("path traversal was not rejected")
+              server.stop()
+              store.close()
+          print("attachment checks OK")
+
+          # 9) PyPI 检查与升级计划（不外呼：仅比较/缓存/环境检测）
+          from agent_trail import update as _upd
+          assert _upd._version_tuple("0.10.0") > _upd._version_tuple("0.9.9")
+          assert _upd._version_tuple("0.6.0rc1") >= _upd._version_tuple("0.6.0")
+          assert _upd.has_update("0.4.0", "0.6.0") and not _upd.has_update("0.6.0", "0.3.3")
+          with tempfile.TemporaryDirectory() as tmp:
+              _upd.write_cache(Path(tmp), "9.9.9")
+              assert _upd.latest_version(Path(tmp)) == "9.9.9"  # 一天内直读缓存
+          _plan = _upd.upgrade_plan()
+          assert _plan is None or (_plan["kind"] in ("pip", "pipx") and _plan["cmd"])
+
           print("workbench unit checks OK on", sys.platform)
           PY
       - name: Smoke test in a fresh venv

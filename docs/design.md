@@ -268,4 +268,6 @@
 
 原则重申：对话能力只在 CLI 存在且无头模式可验证时声明（"诚实降级"）；正文解析保持只读、防御式、逐行容错。
 
+附件策略（2026-11-28 用户设计确认）：同机零拷贝优先——服务端文件浏览器（fs-dialog 文件模式）选中文件只传路径（`kind=path`），agent 通过 resource_link 直读原文件；拖拽/粘贴/跨机场景浏览器只有内容，落盘 `chat_uploads/<线程>/`（`kind=upload`，单文件 6MB、单消息总量 20MB 上限）。两种形态统一转 ACP `resource_link`，one-shot 回退把路径写进提示词。上传文件回显经 `/api/chat/file`（限 chat_uploads 目录防穿越）。
+
 流式语义（2026-11-28 补充）：SSE 传输层逐事件到达（stub 计时 0s/2s/5s 精确验证）；Claude 经 `--include-partial-messages` 得到 token 级增量（delta 事件，完整消息去重），Codex 的 item.updated 为累积语义（replace 事件），Kimi 无增量事件（真机确认整条输出），由前端打字机渐显与"正在思考"指示器补足观感。`ChatEvent` 以 `replace` / `delta` 标志区分三种拼接语义，持久化按相同规则合并，避免增量分片被当作独立段落。

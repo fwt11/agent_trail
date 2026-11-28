@@ -1,10 +1,11 @@
 [Desktop Entry]
 Type=Application
 Name=Agent 足迹
-GenericName=Agent Trail
-Comment=跨 Agent 工作足迹时间线（系统托盘）
+GenericName=跨 Agent 工作台
+Comment=本地 Agent 工作台：会话时间线、应用内对话（kimi/claude/codex 等）、全文检索、附件与审批
 Exec=@EXEC@
 Icon=@ICON@
 Terminal=false
 Categories=Development;Utility;
-Keywords=agent;timeline;trail;coding-agent;
+Keywords=agent;workbench;chat;timeline;trail;coding-agent;kimi;claude;codex;opencode;minimax;codebuddy;zcode;
+StartupWMClass=agent-trail

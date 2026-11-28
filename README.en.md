@@ -13,11 +13,13 @@ A local agent workbench: on one side a cross-agent session timeline — it disco
 - **Session message viewer**: read the actual messages of a session in the detail dialog (with Markdown rendering), lazily parsed and stored locally only
 - **Full-text search**: a local FTS5 index over message bodies, searchable from the header box with highlighted snippets that jump to the session (falls back to LIKE when FTS5 is unavailable)
 - **In-app chat**: start threads and talk to Kimi Code (`kimi -p`, verified on a real machine), Claude Code (`claude -p`), Codex (`codex exec`) or OpenCode (`opencode run`) with streaming replies; thread history persists, resumes across turns, and can be stopped at any time
+- **Chat attachments**: send images and files with a message — zero-copy on the same machine (server-side file browser selects the file, only the path is passed and the agent reads the original), drag/paste/upload auto-saves under `chat_uploads/`; transported via ACP `resource_link`
 - **Live updates**: on Linux, inotify watches the source files and reflects new sessions within seconds (falls back to interval polling automatically)
 - **Work segments**: sessions from the same tool, same directory, within 45 minutes fold into one segment — expandable down to every original session
 - **Resume original session**: for tools whose resume path is verified, opens a new terminal in the original working directory
 - **Privacy first**: message bodies are indexed locally only (disable everything with `--no-content-index`) and never leave the machine; the HTTP console binds to 127.0.0.1 with a per-start high-entropy access token
 - **Honest degradation**: no native title → "Unnamed session"; unverified resume paths → no resume button; missing CLI → plainly reported. It never fakes capabilities
+- **Updates**: daily silent PyPI check (version metadata only, opt-out), new versions surface in the tray menu and console; upgrading is always user-initiated (tray orchestrates: stop serve → pip/pipx upgrade → restart serve); PEP 668 managed environments degrade to a manual command
 - **i18n**: the console UI and tray menu ship in Simplified Chinese and English; the console follows your browser language (`?lang=en` / `?lang=zh-CN` to override), the tray follows `LANG` (`AGENT_TRAIL_LANG` overrides)
 
 ## Platform support
@@ -68,6 +70,8 @@ agent-trail scan      # scan once, print per-source status and record counts
 agent-trail list      # print all session metadata as JSON Lines
 agent-trail serve     # start the local console (opens the browser by default)
 agent-trail tray      # system tray app (Linux, see below)
+agent-trail update    # check PyPI and upgrade in place (--check to only check)
+agent-trail version   # print installed and latest versions
 ```
 
 Common `serve` options:

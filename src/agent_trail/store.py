@@ -169,6 +169,12 @@ class LocalStore:
         self._connection.execute(
             "CREATE INDEX IF NOT EXISTS chat_approvals_thread ON chat_approvals(thread_id, status)"
         )
+        try:
+            self._connection.execute(
+                "ALTER TABLE chat_messages ADD COLUMN attachments_json TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass  # 列已存在
         self._fts_available = self._try_create_fts()
         self._connection.commit()
 
@@ -455,11 +461,25 @@ class LocalStore:
             ).fetchone()
             return self._thread(row) if row is not None else None
 
-    def append_chat_message(self, thread_id: str, role: str, text: str, created_at: str) -> int:
+    def append_chat_message(
+        self,
+        thread_id: str,
+        role: str,
+        text: str,
+        created_at: str,
+        attachments: list[dict] | None = None,
+    ) -> int:
         with self._lock, self._connection:
             cursor = self._connection.execute(
-                "INSERT INTO chat_messages (thread_id, role, text, created_at) VALUES (?,?,?,?)",
-                (thread_id, role, text, created_at),
+                "INSERT INTO chat_messages (thread_id, role, text, created_at, attachments_json) "
+                "VALUES (?,?,?,?,?)",
+                (
+                    thread_id,
+                    role,
+                    text,
+                    created_at,
+                    json.dumps(attachments, ensure_ascii=False) if attachments else None,
+                ),
             )
             self._connection.execute(
                 "UPDATE chat_threads SET updated_at=? WHERE id=?", (created_at, thread_id)
@@ -469,14 +489,25 @@ class LocalStore:
     def thread_messages(self, thread_id: str, limit: int = 1000) -> list[ChatMessage]:
         with self._lock:
             rows = self._connection.execute(
-                "SELECT id, thread_id, role, text, created_at FROM chat_messages "
+                "SELECT id, thread_id, role, text, created_at, attachments_json FROM chat_messages "
                 "WHERE thread_id=? ORDER BY id LIMIT ?",
                 (thread_id, limit),
             ).fetchall()
-            return [
-                ChatMessage(id=row[0], thread_id=row[1], role=row[2], text=row[3], created_at=row[4])
-                for row in rows
-            ]
+            messages = []
+            for row in rows:
+                attachments = []
+                if row[5]:
+                    try:
+                        attachments = json.loads(row[5])
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        attachments = []
+                messages.append(
+                    ChatMessage(
+                        id=row[0], thread_id=row[1], role=row[2], text=row[3],
+                        created_at=row[4], attachments=attachments,
+                    )
+                )
+            return messages
 
     def set_thread_session_ref(self, thread_id: str, session_ref: str | None) -> None:
         with self._lock, self._connection:

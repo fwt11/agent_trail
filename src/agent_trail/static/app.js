@@ -280,6 +280,24 @@ async function loadTimeline({ quiet = false } = {}) {
   }
 }
 
+async function fetchUpdateBadge() {
+  const badge = document.getElementById("update-badge");
+  if (!badge) return;
+  let result;
+  try {
+    result = await api("/api/update/status");
+  } catch (error) {
+    return;
+  }
+  if (result.has_update && result.latest) {
+    badge.textContent = `↑ ${result.latest}`;
+    badge.title = t("update.badge_hint", { current: result.current || "?" });
+    badge.hidden = false;
+  } else {
+    badge.hidden = true;
+  }
+}
+
 async function loadFilterOptions() {
   const result = await api("/api/sessions?limit=1000");
   const sourceSelect = document.getElementById("source-filter");
@@ -314,6 +332,7 @@ async function loadStatus() {
     content_enabled: Boolean(status.content_enabled),
     chat_enabled: Boolean(status.chat_enabled),
   };
+  fetchUpdateBadge();
   document.getElementById("last-scan").textContent = status.last_scanned_at
     ? t("status.scanned_at", { time: formatTime(status.last_scanned_at) })
     : t("status.not_scanned");
@@ -660,6 +679,7 @@ async function openSessionFromSearch(hit) {
 // ---- 视图切换 ----
 
 function switchView(view) {
+  try { window.localStorage.setItem("agent-trail.view", view); } catch (error) { /* 隐私模式 */ }
   document.getElementById("view-timeline").hidden = view !== "timeline";
   document.getElementById("view-chat").hidden = view !== "chat";
   for (const tab of document.querySelectorAll(".view-tab")) {
@@ -688,6 +708,7 @@ const chatState = {
   workdirExpanded: false,
   configCache: {},
   startSettings: {},
+  attachments: [],
   activeThreadId: null,
   activeThread: null,
   activeTaskId: null,
@@ -823,7 +844,11 @@ async function selectThread(threadId) {
   chatState.stepsNode = null;
   document.getElementById("chat-approvals").replaceChildren();
   for (const message of result.messages) {
-    container.append(makeMessageNode(message.role, markdownToHtml(message.text)));
+    const node = makeMessageNode(message.role, markdownToHtml(message.text));
+    container.append(node);
+    if (message.attachments && message.attachments.length) {
+      renderMessageAttachments(node, message.attachments, { previewByUrl: true });
+    }
   }
   container.scrollTop = container.scrollHeight;
   document.getElementById("chat-send").disabled = false;
@@ -856,6 +881,85 @@ async function createThread() {
   }
 }
 
+// ---- 附件（路径引用优先，内容上传兜底）----
+
+function renderAttachList() {
+  const wrap = document.getElementById("chat-attach-list");
+  if (!wrap) return;
+  wrap.replaceChildren();
+  wrap.hidden = !chatState.attachments.length;
+  chatState.attachments.forEach((att, index) => {
+    const chip = element("span", "attach-chip");
+    chip.append(
+      element("span", "attach-icon", att.kind === "path" ? "🔗" : "📄"),
+      element("span", "attach-name", att.name),
+    );
+    const remove = element("button", "attach-remove", "×");
+    remove.type = "button";
+    remove.title = t("chat.attach_remove");
+    remove.addEventListener("click", () => {
+      chatState.attachments.splice(index, 1);
+      renderAttachList();
+    });
+    chip.append(remove);
+    wrap.append(chip);
+  });
+}
+
+function addPathAttachment(path, name) {
+  if (chatState.attachments.length >= 8) {
+    showToast(t("chat.attach_too_many"));
+    return;
+  }
+  if (chatState.attachments.some((item) => item.path === path)) return;
+  chatState.attachments.push({ kind: "path", name: name || path.split("/").pop() || path, path });
+  renderAttachList();
+}
+
+function addContentAttachments(files) {
+  for (const file of files) {
+    if (chatState.attachments.length >= 8) {
+      showToast(t("chat.attach_too_many"));
+      break;
+    }
+    if (file.size > 6 * 1024 * 1024) {
+      showToast(t("chat.attach_too_large"));
+      continue;
+    }
+    chatState.attachments.push({ kind: "upload", name: file.name, mime: file.type || "", file });
+  }
+  renderAttachList();
+}
+
+function readUploadAttachment(att) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result || "");
+      resolve({ kind: "upload", name: att.name, mime: att.mime, data: dataUrl.split(",")[1] || "", preview: dataUrl });
+    };
+    reader.onerror = () => reject(new Error("read failed"));
+    reader.readAsDataURL(att.file);
+  });
+}
+
+function renderMessageAttachments(parent, attachments, { previewByUrl = false } = {}) {
+  if (!attachments || !attachments.length) return;
+  const box = element("div", "chat-msg-attachments");
+  for (const att of attachments) {
+    if (att.kind === "upload" && att.mime && att.mime.startsWith("image/")) {
+      const img = document.createElement("img");
+      img.className = "chat-msg-image";
+      img.alt = att.name;
+      img.src = previewByUrl ? `/api/chat/file?name=${encodeURIComponent(att.rel || "")}` : att.preview || "";
+      box.append(img);
+    } else {
+      box.append(element("span", "attach-chip", `${att.kind === "path" ? "🔗" : "📄"} ${att.name}`));
+    }
+  }
+  parent.append(box);
+}
+
 function updateComposerPlaceholder() {
   const input = document.getElementById("chat-input");
   const thread = chatState.activeThread;
@@ -867,12 +971,13 @@ function updateComposerPlaceholder() {
 
 // ---- 文件夹选择器（服务端目录浏览；浏览器拿不到绝对路径，由本机服务代劳）----
 
-const fsState = { path: null, parent: null };
+const fsState = { path: null, parent: null, mode: "dir", onChoose: null };
 
 async function fsNavigate(path) {
   let result;
   try {
-    const query = path ? `?path=${encodeURIComponent(path)}` : "";
+    const fileParam = fsState.mode === "file" ? "&files=1" : "";
+    const query = path ? `?path=${encodeURIComponent(path)}${fileParam}` : (fileParam ? `?files=1` : "");
     result = await api(`/api/fs/list${query}`);
   } catch (error) {
     showToast(t("fs.unreadable"));
@@ -888,10 +993,23 @@ async function fsNavigate(path) {
     list.append(element("p", "fs-empty", t("fs.empty")));
   }
   for (const entry of result.entries) {
-    const row = element("button", "fs-entry");
+    const row = element("button", `fs-entry${entry.is_dir ? "" : " fs-entry-file"}`);
     row.type = "button";
-    row.append(element("span", "fs-entry-icon", "▸"), element("span", "fs-entry-name", entry.name));
-    row.addEventListener("click", () => fsNavigate(entry.path).catch(() => {}));
+    row.append(
+      element("span", "fs-entry-icon", entry.is_dir ? "▸" : "📄"),
+      element("span", "fs-entry-name", entry.name),
+    );
+    row.addEventListener("click", () => {
+      if (!entry.is_dir) {
+        // 文件模式：选中文件（零拷贝路径引用），目录则继续导航。
+        if (fsState.mode === "file" && fsState.onChoose) {
+          fsState.onChoose(entry);
+          document.getElementById("fs-dialog").close();
+        }
+        return;
+      }
+      fsNavigate(entry.path).catch(() => {});
+    });
     list.append(row);
   }
   const recents = document.getElementById("fs-recents");
@@ -905,12 +1023,24 @@ async function fsNavigate(path) {
   }
 }
 
+function openFsDialog(mode, onChoose) {
+  fsState.mode = mode;
+  fsState.onChoose = onChoose || null;
+  const title = document.getElementById("fs-title");
+  if (title) title.textContent = mode === "file" ? t("fs.pick_file_title") : t("fs.pick_title");
+  fsNavigate(null).catch(() => {});
+  document.getElementById("fs-dialog").showModal();
+}
+
 function bindFsDialog() {
   const dialog = document.getElementById("fs-dialog");
   if (!dialog) return;
   document.getElementById("fs-browse").addEventListener("click", () => {
     const current = document.getElementById("chat-workdir").value.trim();
+    fsState.mode = "dir";
+    fsState.onChoose = null;
     fsNavigate(current || null).catch(() => {});
+    document.getElementById("fs-title").textContent = t("fs.pick_title");
     dialog.showModal();
   });
   document.getElementById("fs-close").addEventListener("click", () => dialog.close());
@@ -1101,7 +1231,7 @@ function setStreaming(streaming) {
 async function sendPrompt() {
   const input = document.getElementById("chat-input");
   const prompt = input.value.trim();
-  if (!prompt || chatState.streaming) return;
+  if ((!prompt && !chatState.attachments.length) || chatState.streaming) return;
   // AionUI 式直达：不先建线程，直接输入即开聊（按当前选中 Agent 创建）。
   if (!chatState.activeThreadId) {
     const thread = await createThread();
@@ -1111,17 +1241,34 @@ async function sendPrompt() {
   chatState.streamingThreadId = chatState.activeThreadId;
   chatState.thoughtNode = null;
   chatState.stepsNode = null;
+  // 附件负载：路径引用直传；内容上传读为 base64。
+  const attachmentsPayload = [];
+  for (const att of chatState.attachments) {
+    if (att.kind === "path") {
+      attachmentsPayload.push({ kind: "path", name: att.name, path: att.path });
+    } else {
+      attachmentsPayload.push(await readUploadAttachment(att));
+    }
+  }
+  const bubble = makeMessageNode("user", markdownToHtml(prompt));
+  renderMessageAttachments(bubble, attachmentsPayload.map((item) => ({ ...item, kind: item.kind })), { previewByUrl: false });
   const container = document.getElementById("chat-messages");
-  container.append(makeMessageNode("user", markdownToHtml(prompt)));
+  container.append(bubble);
   container.scrollTop = container.scrollHeight;
   input.value = "";
+  chatState.attachments = [];
+  renderAttachList();
   showTypingIndicator();
   startApprovalPolling(chatState.activeThreadId);
   let taskId = null;
   try {
     const result = await api("/api/chat/send", {
       method: "POST",
-      body: JSON.stringify({ thread_id: chatState.activeThreadId, prompt }),
+      body: JSON.stringify({
+        thread_id: chatState.activeThreadId,
+        prompt,
+        attachments: attachmentsPayload.length ? attachmentsPayload : undefined,
+      }),
     });
     taskId = result.task_id;
     chatState.activeTaskId = taskId;
@@ -1408,6 +1555,35 @@ function bindControls() {
       sendPrompt();
     }
   });
+  // 附件：+ 按钮走服务端文件浏览器（零拷贝路径引用）；文件输入/粘贴/拖拽走内容上传。
+  document.getElementById("chat-attach").addEventListener("click", () => {
+    openFsDialog("file", (entry) => addPathAttachment(entry.path, entry.name));
+  });
+  const fileInput = document.getElementById("chat-file-input");
+  fileInput.addEventListener("change", () => {
+    addContentAttachments([...fileInput.files]);
+    fileInput.value = "";
+  });
+  const input = document.getElementById("chat-input");
+  input.addEventListener("paste", (event) => {
+    const files = [...(event.clipboardData?.files || [])];
+    if (files.length) {
+      event.preventDefault();
+      addContentAttachments(files);
+    }
+  });
+  const composer = input.closest(".composer");
+  composer.addEventListener("dragover", (event) => {
+    event.preventDefault();
+    composer.classList.add("is-dragover");
+  });
+  composer.addEventListener("dragleave", () => composer.classList.remove("is-dragover"));
+  composer.addEventListener("drop", (event) => {
+    event.preventDefault();
+    composer.classList.remove("is-dragover");
+    const files = [...(event.dataTransfer?.files || [])];
+    if (files.length) addContentAttachments(files);
+  });
   bindFsDialog();
   document.querySelectorAll("[data-period]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -1514,6 +1690,11 @@ async function initialize() {
     searchInput.placeholder = t("search.disabled_placeholder");
   }
   await Promise.all([loadFilterOptions(), loadTimeline()]);
+  // 默认打开对话（AionUI 式工作台主视图）；记住用户上次的选择。
+  let initialView = "chat";
+  try { initialView = window.localStorage.getItem("agent-trail.view") || "chat"; } catch (error) { /* 隐私模式 */ }
+  if (initialView === "chat" && !state.workbench.chat_enabled) initialView = "timeline";
+  switchView(initialView);
   window.setInterval(() => {
     if (!document.hidden) {
       Promise.all([loadStatus(), loadTimeline({ quiet: true })]).catch(() => {});

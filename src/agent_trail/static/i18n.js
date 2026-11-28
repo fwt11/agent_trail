@@ -8,7 +8,7 @@
 
 const I18N_DICT = {
   "zh-CN": {
-    "app.title": "Agent 足迹 · 找回工作现场",
+    "app.title": "Agent 足迹 · 本地 Agent 工作台",
     "header.local_badge": "本地运行 · 元数据索引",
     "header.refresh": "刷新足迹",
     "skip.timeline": "跳至时间线",
@@ -94,6 +94,12 @@ const I18N_DICT = {
     "chat.config_thinking": "思考强度",
     "chat.config_mode": "模式",
     "chat.config_auto": "自动",
+    "chat.attach": "＋ 附件",
+    "update.badge_hint": "有新版本可用（当前 {current}），托盘菜单或 agent-trail update 可升级",
+    "chat.attach_remove": "移除附件",
+    "chat.attach_too_many": "附件太多（最多 8 个）。",
+    "chat.attach_too_large": "单个附件超过 6MB。",
+    "fs.pick_file_title": "选择附件文件",
     "chat.config_applied": "配置已生效。",
     "chat.config_failed": "配置切换失败。",
     "chat.role_assistant": "Agent",
@@ -168,7 +174,7 @@ const I18N_DICT = {
     "backend.resume.launch_ok": "已发起，请在原工具中确认恢复结果",
   },
   en: {
-    "app.title": "Agent Trail · Find your way back to work",
+    "app.title": "Agent Trail · Local Agent Workbench",
     "header.local_badge": "Local · metadata index",
     "header.refresh": "Refresh trail",
     "skip.timeline": "Skip to timeline",
@@ -254,6 +260,12 @@ const I18N_DICT = {
     "chat.config_thinking": "Thinking",
     "chat.config_mode": "Mode",
     "chat.config_auto": "Auto",
+    "chat.attach": "+ Attach",
+    "update.badge_hint": "A new version is available (current {current}); upgrade from the tray menu or agent-trail update",
+    "chat.attach_remove": "Remove attachment",
+    "chat.attach_too_many": "Too many attachments (max 8).",
+    "chat.attach_too_large": "A single attachment exceeds 6MB.",
+    "fs.pick_file_title": "Choose a file",
     "chat.config_applied": "Setting applied.",
     "chat.config_failed": "Failed to switch the setting.",
     "chat.role_assistant": "Agent",

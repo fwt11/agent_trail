@@ -160,6 +160,8 @@ class ChatMessage:
     role: MessageRole
     text: str
     created_at: str
+    # 附件清单：[{name, path, mime, kind}]（kind: image | file）
+    attachments: list[dict] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

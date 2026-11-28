@@ -49,6 +49,35 @@ class ChatError(Exception):
     """对外可读的聊天请求失败原因（HTTP 409/400 的 message）。"""
 
 
+def _content_blocks(prompt: str, attachments: list[dict]) -> list[dict]:
+    """构建 ACP session/prompt 内容块：文本 + 附件 resource_link。
+
+    附件一律传本机绝对路径（kind=path 零拷贝引用原文件；kind=upload
+    已由 server 落盘）——agent 用自己的读取工具打开，服务器不复制图片。
+    """
+    blocks: list[dict] = [{"type": "text", "text": prompt}]
+    for att in attachments:
+        uri = Path(att["path"]).resolve().as_uri()
+        blocks.append({
+            "type": "resource_link",
+            "uri": uri,
+            "name": att.get("name") or Path(att["path"]).name,
+        })
+    return blocks
+
+
+def save_upload(uploads_dir: Path, thread_id: str, name: str, data: bytes) -> Path:
+    """把上传内容落盘到 chat_uploads/<线程>/ 并返回路径（跨机场景专用）。"""
+    import re as _re
+
+    safe_name = _re.sub(r"[^\w.\-\u4e00-\u9fff]+", "_", name or "file")[-120:] or "file"
+    directory = uploads_dir / thread_id
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / f"{uuid.uuid4().hex[:8]}-{safe_name}"
+    target.write_bytes(data)
+    return target
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -81,9 +110,15 @@ class _TurnBase:
 
 
 class ChatManager:
-    def __init__(self, store: LocalStore, adapters: list[BaseAdapter]) -> None:
+    def __init__(
+        self,
+        store: LocalStore,
+        adapters: list[BaseAdapter],
+        uploads_dir: str | Path | None = None,
+    ) -> None:
         self.store = store
         self.adapters = list(adapters)
+        self.uploads_dir = Path(uploads_dir) if uploads_dir else None
         self._turns: dict[str, _TurnBase] = {}
         self._acp_clients: dict[str, tuple[AcpClient, float]] = {}
         self._approvals: dict[str, tuple[threading.Event, dict]] = {}
@@ -212,7 +247,7 @@ class ChatManager:
                     pass  # 选择器数据可能含 agent 不支持的值；下回合再报
         self._touch_acp(thread_id)
 
-    def start_turn(self, thread_id: str, prompt: str) -> str:
+    def start_turn(self, thread_id: str, prompt: str, attachments: list[dict] | None = None) -> str:
         thread = self.store.get_thread(thread_id)
         if thread is None:
             raise ChatError("thread not found")
@@ -223,17 +258,32 @@ class ChatManager:
         if executable is None:
             raise ChatError(f"{backend.executable} not found in PATH")
         prompt = prompt.strip()
-        if not prompt:
+        if not prompt and not attachments:
             raise ChatError("empty prompt")
         max_chars = self._max_prompt_chars(thread.source)
         if len(prompt) > max_chars:
             raise ChatError(f"prompt exceeds {max_chars} characters")
-        with self._lock:
-            self._prune_locked()
-            running = sum(1 for turn in self._turns.values() if turn.finished_at is None)
-            if running >= MAX_CONCURRENT_TASKS:
-                raise ChatError("too many running chats")
-        self.store.append_chat_message(thread_id, "user", prompt, utc_now())
+        # 附件统一为路径引用：kind=path（零拷贝）与 kind=upload（已由
+        # server 落盘）在 agent 视角等价——都是本机可读的文件路径。
+        normalized: list[dict] = []
+        for att in attachments or []:
+            path_value = att.get("path")
+            if not isinstance(path_value, str) or not path_value:
+                raise ChatError("invalid attachment path")
+            path_obj = Path(path_value).expanduser()
+            if not path_obj.is_file():
+                raise ChatError(f"attachment missing: {path_obj.name}")
+            normalized.append({
+                "kind": att.get("kind") or "upload",
+                "name": str(att.get("name") or path_obj.name)[:200],
+                "path": str(path_obj),
+                "mime": str(att.get("mime") or ""),
+            })
+        if len(normalized) > 8:
+            raise ChatError("too many attachments")
+        self.store.append_chat_message(
+            thread_id, "user", prompt, utc_now(), attachments=normalized or None
+        )
         if thread.title in ("", "New chat", "新对话"):
             # 首条消息自动命名线程（AionUI 式体验）。
             title = prompt.replace("\n", " ")[:TITLE_MAX_CHARS].strip() or "New chat"
@@ -242,24 +292,19 @@ class ChatManager:
             acp_command = backend.resolve_acp_command()
             if acp_command is not None:
                 turn: _TurnBase = _AcpTurn(
-                    manager=self, thread=thread, prompt=prompt, backend=backend, acp_command=acp_command
+                    manager=self, thread=thread, prompt=prompt, backend=backend,
+                    acp_command=acp_command, attachments=normalized,
                 )
             else:
                 # ACP 依赖（如 npx 适配器）不可用：回退 one-shot。
                 turn = _ChatTask(
-                    manager=self,
-                    thread=thread,
-                    prompt=prompt,
-                    backend=backend,
-                    executable=executable,
+                    manager=self, thread=thread, prompt=prompt, backend=backend,
+                    executable=executable, attachments=normalized,
                 )
         else:
             turn = _ChatTask(
-                manager=self,
-                thread=thread,
-                prompt=prompt,
-                backend=backend,
-                executable=executable,
+                manager=self, thread=thread, prompt=prompt, backend=backend,
+                executable=executable, attachments=normalized,
             )
         with self._lock:
             self._turns[turn.task_id] = turn
@@ -497,6 +542,7 @@ class _AcpTurn(_TurnBase, threading.Thread):
         prompt: str,
         backend: ChatBackend,
         acp_command: tuple[str, ...],
+        attachments: list[dict] | None = None,
     ) -> None:
         threading.Thread.__init__(self, name="agent-trail-acp", daemon=True)
         _TurnBase.__init__(self)
@@ -505,6 +551,7 @@ class _AcpTurn(_TurnBase, threading.Thread):
         self.prompt = prompt
         self.backend = backend
         self.acp_command = acp_command
+        self.content_blocks = _content_blocks(prompt, attachments or [])
 
     def request_cancel(self) -> None:
         self._cancel.set()
@@ -535,7 +582,7 @@ class _AcpTurn(_TurnBase, threading.Thread):
                 except AcpError as error:
                     self._emit({"type": "error", "text": str(error)})
         try:
-            stop_reason = client.prompt(self.prompt)
+            stop_reason = client.prompt_blocks(self.content_blocks)
         except AcpError as error:
             self._emit({"type": "error", "text": str(error)})
             return
@@ -562,6 +609,7 @@ class _ChatTask(_TurnBase, threading.Thread):
         prompt: str,
         backend: ChatBackend,
         executable: str,
+        attachments: list[dict] | None = None,
     ) -> None:
         threading.Thread.__init__(self, name="agent-trail-chat", daemon=True)
         _TurnBase.__init__(self)
@@ -571,6 +619,7 @@ class _ChatTask(_TurnBase, threading.Thread):
         self.prompt = prompt
         self.backend = backend
         self.executable = executable
+        self.attachments = attachments or []
         self._process: subprocess.Popen | None = None
 
     @property
@@ -609,9 +658,15 @@ class _ChatTask(_TurnBase, threading.Thread):
             self.finish()
 
     def _run_process(self) -> None:
+        prompt = self.prompt
+        if self.attachments:
+            # one-shot 通道没有 resource_link：把附件路径写进提示词，
+            # 由 agent 的读取工具自行打开（零拷贝）。
+            lines = "\n".join(f"- {att['path']}" for att in self.attachments)
+            prompt = f"{self.prompt}\n\n[附件文件]\n{lines}"
         argv = self.backend.build_argv(self.thread.session_ref)
         if self.backend.prompt_via == "argv":
-            argv.append(self.prompt)
+            argv.append(prompt)
         try:
             self._process = subprocess.Popen(
                 argv,
@@ -630,7 +685,7 @@ class _ChatTask(_TurnBase, threading.Thread):
             return
         if self.backend.prompt_via == "stdin" and self._process.stdin is not None:
             # 大 prompt 可能超过管道缓冲，另起线程写入避免与 stdout 读取互锁。
-            feeder = threading.Thread(target=self._feed_stdin, daemon=True)
+            feeder = threading.Thread(target=lambda: self._feed_stdin(prompt), daemon=True)
             feeder.start()
         parse_line = self.backend.create_parser()
         deadline = datetime.now(timezone.utc).timestamp() + TASK_TIMEOUT_SECONDS
@@ -689,10 +744,10 @@ class _ChatTask(_TurnBase, threading.Thread):
             self._persist_assistant("\n\n".join(part for part in assistant_parts if part))
         self._emit({"type": "done", "session_ref": session_ref, "cancelled": self._cancel.is_set()})
 
-    def _feed_stdin(self) -> None:
+    def _feed_stdin(self, prompt: str) -> None:
         assert self._process is not None and self._process.stdin is not None
         try:
-            self._process.stdin.write(self.prompt + "\n")
+            self._process.stdin.write(prompt + "\n")
             self._process.stdin.close()
         except (OSError, ValueError):
             pass

@@ -867,3 +867,52 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .workdir-line:hover { color: var(--ink); }
 .chat-area.is-start .workdir-row { order: 3; width: min(760px, 92%); margin: 8px auto 0; }
 .chat-area.is-start .chat-suggestions { order: 4; }
+
+/* ---- 附件（路径引用 / 上传预览） ---- */
+.chat-attach-list { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--white);
+  color: var(--ink);
+  font-size: 12px;
+  max-width: 260px;
+}
+.attach-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attach-remove {
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.attach-remove:hover { color: var(--rust); }
+.chat-msg-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.chat-msg-image {
+  max-width: 240px;
+  max-height: 180px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  display: block;
+}
+.composer.is-dragover { outline: 2px dashed var(--forest); outline-offset: -4px; }
+.composer.is-dragover textarea { border-color: var(--forest); }
+
+/* ---- 版本角标 ---- */
+.update-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  border: 1px solid #d8b26a;
+  border-radius: 999px;
+  background: #f7eed9;
+  color: #5c451f;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 650;
+}

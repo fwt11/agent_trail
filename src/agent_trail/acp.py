@@ -248,7 +248,11 @@ class AcpClient:
     # ---- 对话 ----
 
     def prompt(self, text: str) -> str:
-        """发送一轮用户输入，阻塞到回合结束，返回 stopReason。
+        """发送一轮文本输入，阻塞到回合结束，返回 stopReason。"""
+        return self.prompt_blocks([{"type": "text", "text": text}])
+
+    def prompt_blocks(self, blocks: list[dict]) -> str:
+        """发送一轮多模态输入（text / image / resource_link 块）。
 
         期间的流式更新经 on_update 回调推送；审批请求经 on_permission。
         """
@@ -256,7 +260,7 @@ class AcpClient:
             raise AcpError("session not established")
         response = self._request(
             "session/prompt",
-            {"sessionId": self.session_id, "prompt": [{"type": "text", "text": text}]},
+            {"sessionId": self.session_id, "prompt": blocks},
             timeout=None,
         )
         if response is None:

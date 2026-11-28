@@ -77,6 +77,9 @@ STRINGS = {
         "menu.stop": "停止服务",
         "menu.start": "启动服务",
         "menu.autostart": "开机自启",
+        "menu.upgrade": "升级到 {v}",
+        "menu.upgrading": "升级中…",
+        "menu.restart_tray": "重启托盘（生效新版本）",
         "menu.quit": "退出",
         "install.removed": "已移除 {path}",
         "install.done": "已安装 {path}",
@@ -98,6 +101,9 @@ STRINGS = {
         "menu.stop": "Stop service",
         "menu.start": "Start service",
         "menu.autostart": "Launch at login",
+        "menu.upgrade": "Upgrade to {v}",
+        "menu.upgrading": "Upgrading…",
+        "menu.restart_tray": "Restart tray to apply",
         "menu.quit": "Quit",
         "install.removed": "Removed {path}",
         "install.done": "Installed {path}",
@@ -136,6 +142,88 @@ def emit(event: dict) -> None:
 def _looks_executable(path: str) -> bool:
     candidate = Path(path)
     return candidate.is_file() and os.access(candidate, os.X_OK)
+
+
+# ---- 应用内升级（PyPI）------------------------------------------------
+# 每日一次检查 PyPI 最新版本（仅版本号元数据，可 AGENT_TRAIL_NO_UPDATE_CHECK
+# 关闭）；升级必须用户从菜单显式触发，编排为 停 serve → pip/pipx 升级 →
+# 重启 serve。托盘自身重启后才完全生效（菜单提供重启项）。
+
+_UPDATE_DATA_DIR = Path.home() / ".agent-trail"
+
+
+class UpdateState:
+    """双后端共用的升级状态与编排。"""
+
+    def __init__(self) -> None:
+        self.latest: str | None = None
+        self.upgrading = False
+        self.upgraded = False
+        self.failed_hint: str | None = None
+
+    @property
+    def has_update(self) -> bool:
+        if not self.latest:
+            return False
+        try:
+            from .. import update as upd
+        except Exception:
+            return False
+        return upd.has_update(upd.current_version(), self.latest)
+
+    def check(self) -> None:
+        try:
+            from .. import update as upd
+        except Exception:
+            return
+        if upd.no_update_check():
+            return
+        self.latest = upd.latest_version(_UPDATE_DATA_DIR) or None
+
+    def run(self, rebuild) -> None:
+        """编排升级：停 serve → 升级 → 重启 serve；rebuild() 刷新菜单。"""
+        if self.upgrading:
+            return
+        try:
+            from .. import update as upd
+        except Exception:
+            return
+        self.upgrading = True
+        self.failed_hint = None
+        rebuild()
+        plan = upd.upgrade_plan()
+        if plan is None:
+            self.upgrading = False
+            self.failed_hint = upd.manual_hint()
+            rebuild()
+            return
+        if self.core_stop is not None:
+            self.core_stop()
+        ok, _output = upd.run_upgrade(plan["cmd"], on_line=lambda line: print(f"[upgrade] {line}", flush=True))
+        self.upgrading = False
+        self.upgraded = ok
+        if not ok:
+            self.failed_hint = "升级失败，详见 ~/.agent-trail/tray.log"
+        if self.core_start is not None:
+            self.core_start()
+        rebuild()
+
+    # 由各后端注入的生命周期钩子
+    core_stop = None
+    core_start = None
+
+
+def _restart_tray() -> None:
+    """重启托盘进程使新版本完全生效（POSIX re-exec；Windows 分离重启）。"""
+    import subprocess as _subprocess
+
+    args = [sys.executable, *sys.argv]
+    if os.name == "posix":
+        os.execv(sys.executable, args)
+    else:
+        flags = getattr(_subprocess, "DETACHED_PROCESS", 0) | getattr(_subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        _subprocess.Popen(args, creationflags=flags)
+        raise SystemExit(0)
 
 
 class TrailCore:
@@ -346,7 +434,7 @@ def ensure_desktop_entry() -> None:
     executable = shutil.which("agent-trail") or sys.argv[0]
     if not _looks_executable(executable):
         return
-    entry = render_desktop_entry(executable, ICON_PATH)
+    entry = render_desktop_entry(executable, ICON_PATH, extra_args=("--show",))
     try:
         if not APP_MENU_PATH.exists() or APP_MENU_PATH.read_text(encoding="utf-8") != entry:
             APP_MENU_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -359,16 +447,19 @@ def ensure_desktop_entry() -> None:
 
 
 def render_desktop_entry(executable: str, icon: Path,
-                         template: Path = DESKTOP_TEMPLATE) -> str:
+                         template: Path = DESKTOP_TEMPLATE,
+                         extra_args: tuple[str, ...] = ()) -> str:
     # Deepin 的 app-launch-helper 会对「指向 Python 脚本」的 Exec 强制改用
     # /usr/bin/python3 执行（无视 shebang），venv 安装直接 ModuleNotFoundError。
     # 用 /bin/sh -c exec 包装：加载器看到 ELF 二进制就不再劫持，sh 按
     # shebang 正确执行。executable 路径内的单引号会破坏该包装（极少见），
-    # 此时回退为直连形式。
+    # 此时回退为直连形式。extra_args 必须放进 -c 脚本内部（拼在外面只
+    # 会成为 sh 的 $0）。
+    args_text = "".join(f" {arg}" for arg in extra_args)
     if "'" not in executable:
-        exec_line = f'/bin/sh -c "exec \'{executable}\' tray"'
+        exec_line = f'/bin/sh -c "exec \'{executable}\' tray{args_text}"'
     else:
-        exec_line = f"{executable} tray"
+        exec_line = f"{executable} tray{args_text}"
     text = template.read_text(encoding="utf-8")
     return text.replace("@EXEC@", exec_line).replace("@ICON@", str(icon))
 
@@ -471,7 +562,30 @@ def run_gtk(icon_path: Path, show: bool = False) -> int:
             self.window: Gtk.Window | None = None
             self.view: WebKit2.WebView | None = None
             self.pending_open = False
+            self.updates = UpdateState()
+            self.updates.core_stop = lambda: self.core.stop() if self.core.available else None
+            self.updates.core_start = lambda: self.core.start() if self.core.available and self.core.state == "stopped" else None
             self.update_menu()
+            threading.Thread(target=self._update_check_loop, daemon=True).start()
+
+        def _update_check_loop(self) -> None:
+            time.sleep(20.0)  # 避开启动网络争用
+            self.updates.check()
+            GLib.idle_add(self.update_menu)
+            while True:
+                time.sleep(86400.0)
+                self.updates.check()
+                GLib.idle_add(self.update_menu)
+
+        def run_upgrade(self) -> None:
+            # 后台编排：停 serve → pip/pipx 升级 → 重启 serve；完成后菜单
+            # 提供"重启托盘"。
+            threading.Thread(target=lambda: self.updates.run(
+                rebuild=lambda: GLib.idle_add(self.update_menu),
+            ), daemon=True).start()
+
+        def restart_tray(self) -> None:
+            _restart_tray()
 
         # 托盘菜单（声明式，状态变化整体重建）--------------------------------
         def update_menu(self) -> None:
@@ -488,7 +602,7 @@ def run_gtk(icon_path: Path, show: bool = False) -> int:
                 status = tr("status.stopped")
             running = core.state == "running"
             service_live = core.process is not None
-            self.tray.set_menu([
+            items = [
                 MenuSpec(status, enabled=False),
                 MenuSpec(tr("menu.open"), enabled=running, action=self.open_console),
                 MenuSpec(tr("menu.refresh"), enabled=running, action=self.refresh_now),
@@ -497,9 +611,22 @@ def run_gtk(icon_path: Path, show: bool = False) -> int:
                          enabled=core.available, action=self.toggle_service),
                 MenuSpec(tr("menu.autostart"), is_check=True, checked=autostart_enabled(),
                          action=self.toggle_autostart),
-                MenuSpec(is_separator=True),
-                MenuSpec(tr("menu.quit"), action=self.quit),
-            ])
+            ]
+            # 应用内升级（PyPI）：有新版才出现；升级完成后提供重启托盘项。
+            if self.updates.upgrading:
+                items.append(MenuSpec(tr("menu.upgrading"), enabled=False))
+            elif self.updates.upgraded:
+                items.append(MenuSpec(tr("menu.restart_tray"), action=self.restart_tray))
+            elif self.updates.has_update:
+                items.append(MenuSpec(
+                    tr("menu.upgrade").format(v=self.updates.latest),
+                    action=self.run_upgrade,
+                ))
+            if self.updates.failed_hint:
+                items.append(MenuSpec(self.updates.failed_hint, enabled=False))
+            items.append(MenuSpec(is_separator=True))
+            items.append(MenuSpec(tr("menu.quit"), action=self.quit))
+            self.tray.set_menu(items)
 
         # 状态事件 -----------------------------------------------------------
         def on_event(self, event: dict) -> bool:
@@ -623,6 +750,9 @@ def run_web(icon_path: Path, show: bool = False) -> int:
             self.core = TrailCore(on_event=self._on_core_event)
             self.console_window = None
             self.pending_open = show
+            self.updates = UpdateState()
+            self.updates.core_stop = lambda: self.core.stop() if self.core.available else None
+            self.updates.core_start = lambda: self.core.start() if self.core.available and self.core.state == "stopped" else None
 
             self.icon = pystray.Icon(
                 "agent-trail",
@@ -640,9 +770,37 @@ def run_web(icon_path: Path, show: bool = False) -> int:
                     pystray.MenuItem(tr("menu.autostart"), self.toggle_autostart,
                                      checked=lambda *a: autostart_enabled()),
                     pystray.Menu.SEPARATOR,
+                    pystray.MenuItem(lambda *a: tr("menu.upgrading") if self.updates.upgrading
+                                     else tr("menu.upgrade").format(v=self.updates.latest or ""),
+                                     self.run_upgrade,
+                                     visible=lambda *a: (self.updates.has_update and not self.updates.upgrading and not self.updates.upgraded),
+                                     enabled=lambda *a: not self.updates.upgrading),
+                    pystray.MenuItem(tr("menu.restart_tray"), self.restart_tray,
+                                     visible=lambda *a: self.updates.upgraded),
+                    pystray.MenuItem(lambda *a: self.updates.failed_hint or "",
+                                     None, enabled=False,
+                                     visible=lambda *a: bool(self.updates.failed_hint)),
+                    pystray.Menu.SEPARATOR,
                     pystray.MenuItem(tr("menu.quit"), self.quit),
                 ),
             )
+            threading.Thread(target=self._update_check_loop, daemon=True).start()
+
+        def _update_check_loop(self) -> None:
+            time.sleep(20.0)
+            self.updates.check()
+            while True:
+                time.sleep(86400.0)
+                self.updates.check()
+
+        def run_upgrade(self, *args) -> None:
+            threading.Thread(target=lambda: self.updates.run(rebuild=lambda: None), daemon=True).start()
+
+        def restart_tray(self, *args) -> None:
+            _restart_tray()
+
+        def finished(self) -> bool:
+            return self.updates.upgraded
 
         # -- pystray 动态文案（菜单打开时求值）--------------------------------
         def _status_text(self, icon, item):
@@ -827,7 +985,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.install:
         APP_MENU_PATH.parent.mkdir(parents=True, exist_ok=True)
         executable = shutil.which("agent-trail") or sys.argv[0]
-        APP_MENU_PATH.write_text(render_desktop_entry(executable, ICON_PATH), encoding="utf-8")
+        APP_MENU_PATH.write_text(
+            render_desktop_entry(executable, ICON_PATH, extra_args=("--show",)),
+            encoding="utf-8",
+        )
         print(tr("install.done", path=APP_MENU_PATH))
         return 0
 

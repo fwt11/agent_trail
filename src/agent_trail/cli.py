@@ -47,6 +47,9 @@ def build_parser() -> argparse.ArgumentParser:
     tray.add_argument("--foreground", action="store_true", help="run in the foreground (default: detach with logs in ~/.agent-trail/tray.log)")
     tray.add_argument("--install", action="store_true", help="add an applications-menu entry")
     tray.add_argument("--uninstall", action="store_true", help="remove the menu entry and autostart")
+    update = commands.add_parser("update", help="check PyPI and upgrade session-trail in-place")
+    update.add_argument("--check", action="store_true", help="only check for updates, do not upgrade")
+    commands.add_parser("version", help="print installed and latest versions")
     return parser
 
 
@@ -70,6 +73,27 @@ def main(argv: list[str] | None = None) -> int:
         if rest and rest[0] == "tray":
             rest = rest[1:]  # 子命令词由 cli 层消费，不传给 tray 解析器
         return tray_main(rest)
+    if args.command in ("update", "version"):
+        from . import update as update_mod
+
+        current = update_mod.current_version()
+        latest = update_mod.latest_version(args.data_dir.expanduser())
+        print(json.dumps({
+            "current": current,
+            "latest": latest,
+            "has_update": update_mod.has_update(current, latest),
+        }, ensure_ascii=False))
+        if args.command == "version" or (args.command == "update" and args.check):
+            return 0
+        plan = update_mod.upgrade_plan()
+        if plan is None:
+            print(f"无法在此环境自升级（PEP 668 或缺少 pip），请手动执行：{update_mod.manual_hint()}")
+            return 1
+        print(f"运行升级：{' '.join(plan['cmd'])}")
+        ok, output = update_mod.run_upgrade(plan["cmd"], on_line=print)
+        print("升级完成" if ok else "升级失败，请查看上方输出")
+        return 0 if ok else 1
+
     index_path = args.data_dir.expanduser() / "index.sqlite"
     with LocalStore(index_path) as store:
         adapters = default_adapters(args.home.expanduser())
@@ -98,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
             indexer = ContentIndexer(store, adapters) if content_enabled else None
             if indexer is not None:
                 indexer.index_due()
-            chat = ChatManager(store, adapters)
+            chat = ChatManager(store, adapters, uploads_dir=args.data_dir / "chat_uploads")
             server = LocalServer(store, scanner, port=args.port, indexer=indexer, chat=chat)
             url = server.start()
             print(url, flush=True)
