@@ -82,11 +82,11 @@ jobs:
           else:
               assert isinstance(create_watcher([(Path(tmp) / "x", True)], lambda: None), PollingWatcher)
 
-          # 终端平台分发
+          # 终端平台分发（wezterm 优先探测，避免其 -e 参数误入其他终端）
           if sys.platform == "win32":
               assert TerminalLauncher._terminals_for_platform()[0][0] == "wt.exe"
           else:
-              assert TerminalLauncher._terminals_for_platform()[0][0] == "x-terminal-emulator"
+              assert TerminalLauncher._terminals_for_platform()[0][0] == "wezterm"
 
           # Windows sqlite 只读 URI（在真 Windows runner 上执行）
           if sys.platform == "win32":
