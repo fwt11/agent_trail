@@ -81,7 +81,8 @@ def main(argv: list[str] | None = None) -> int:
         from . import update as update_mod
 
         current = update_mod.current_version()
-        latest = update_mod.latest_version(args.data_dir.expanduser())
+        # 显式动作必须真查网络，不被 24h 缓存锁住。
+        latest = update_mod.latest_version(args.data_dir.expanduser(), force=True)
         print(json.dumps({
             "current": current,
             "latest": latest,

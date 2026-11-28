@@ -79,6 +79,7 @@ STRINGS = {
         "menu.autostart": "开机自启",
         "menu.upgrade": "升级到 {v}",
         "menu.upgrading": "升级中…",
+        "menu.check_update": "检查更新",
         "menu.restart_tray": "重启托盘（生效新版本）",
         "menu.quit": "退出",
         "install.removed": "已移除 {path}",
@@ -103,6 +104,7 @@ STRINGS = {
         "menu.autostart": "Launch at login",
         "menu.upgrade": "Upgrade to {v}",
         "menu.upgrading": "Upgrading…",
+        "menu.check_update": "Check for updates",
         "menu.restart_tray": "Restart tray to apply",
         "menu.quit": "Quit",
         "install.removed": "Removed {path}",
@@ -171,14 +173,14 @@ class UpdateState:
             return False
         return upd.has_update(upd.current_version(), self.latest)
 
-    def check(self) -> None:
+    def check(self, force: bool = False) -> None:
         try:
             from .. import update as upd
         except Exception:
             return
         if upd.no_update_check():
             return
-        self.latest = upd.latest_version(_UPDATE_DATA_DIR) or None
+        self.latest = upd.latest_version(_UPDATE_DATA_DIR, force=force) or None
 
     def run(self, rebuild) -> None:
         """编排升级：停 serve → 升级 → 重启 serve；rebuild() 刷新菜单。"""
@@ -570,12 +572,18 @@ def run_gtk(icon_path: Path, show: bool = False) -> int:
 
         def _update_check_loop(self) -> None:
             time.sleep(20.0)  # 避开启动网络争用
-            self.updates.check()
+            self.updates.check(force=True)  # 启动即真查，不被旧缓存锁住
             GLib.idle_add(self.update_menu)
             while True:
                 time.sleep(86400.0)
                 self.updates.check()
                 GLib.idle_add(self.update_menu)
+
+        def check_update_now(self) -> None:
+            threading.Thread(target=lambda: (
+                self.updates.check(force=True),
+                GLib.idle_add(self.update_menu),
+            ), daemon=True).start()
 
         def run_upgrade(self) -> None:
             # 后台编排：停 serve → pip/pipx 升级 → 重启 serve；完成后菜单
@@ -624,6 +632,9 @@ def run_gtk(icon_path: Path, show: bool = False) -> int:
                 ))
             if self.updates.failed_hint:
                 items.append(MenuSpec(self.updates.failed_hint, enabled=False))
+            items.append(MenuSpec(tr("menu.check_update"),
+                                  enabled=not self.updates.upgrading,
+                                  action=self.check_update_now))
             items.append(MenuSpec(is_separator=True))
             items.append(MenuSpec(tr("menu.quit"), action=self.quit))
             self.tray.set_menu(items)
@@ -780,6 +791,7 @@ def run_web(icon_path: Path, show: bool = False) -> int:
                     pystray.MenuItem(lambda *a: self.updates.failed_hint or "",
                                      None, enabled=False,
                                      visible=lambda *a: bool(self.updates.failed_hint)),
+                    pystray.MenuItem(tr("menu.check_update"), self.check_update_now),
                     pystray.Menu.SEPARATOR,
                     pystray.MenuItem(tr("menu.quit"), self.quit),
                 ),
@@ -788,10 +800,13 @@ def run_web(icon_path: Path, show: bool = False) -> int:
 
         def _update_check_loop(self) -> None:
             time.sleep(20.0)
-            self.updates.check()
+            self.updates.check(force=True)
             while True:
                 time.sleep(86400.0)
                 self.updates.check()
+
+        def check_update_now(self, *args) -> None:
+            threading.Thread(target=lambda: self.updates.check(force=True), daemon=True).start()
 
         def run_upgrade(self, *args) -> None:
             threading.Thread(target=lambda: self.updates.run(rebuild=lambda: None), daemon=True).start()

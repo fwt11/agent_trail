@@ -75,15 +75,26 @@ def read_cache(data_dir: Path) -> dict | None:
         return None
 
 
-def write_cache(data_dir: Path, latest: str | None) -> None:
+def write_cache(data_dir: Path, latest: str | None, error: str | None = None) -> None:
     try:
         _cache_path(data_dir).parent.mkdir(parents=True, exist_ok=True)
         _cache_path(data_dir).write_text(
-            json.dumps({"latest": latest, "checked_at": time.time()}, ensure_ascii=False),
+            json.dumps(
+                {"latest": latest, "checked_at": time.time(), "error": error},
+                ensure_ascii=False,
+            ),
             encoding="utf-8",
         )
     except OSError:
-        pass  # 缓存失败不影响功能
+        pass
+
+
+def cache_age(data_dir: Path) -> float | None:
+    """缓存年龄（秒）；无缓存返回 None。"""
+    cached = read_cache(data_dir)
+    if cached is None:
+        return None
+    return max(0.0, time.time() - float(cached.get("checked_at") or 0))  # 缓存失败不影响功能
 
 
 def latest_version(data_dir: Path, *, force: bool = False) -> str | None:
@@ -102,7 +113,10 @@ def latest_version(data_dir: Path, *, force: bool = False) -> str | None:
         latest = str(data.get("info", {}).get("version") or "") or None
         write_cache(data_dir, latest)
         return latest
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError, KeyError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError, KeyError) as error:
+        # 网络失败：保留陈旧缓存并记录错误，供诊断（托盘/状态端点可见）。
+        write_cache(data_dir, cached.get("latest") if cached else None,
+                    error=f"{type(error).__name__}")
         return cached.get("latest") if cached else None
 
 

@@ -157,6 +157,21 @@ class LocalServer:
             "current": current,
             "latest": latest,
             "has_update": _update.has_update(current, latest),
+            "checked_at": (cached or {}).get("checked_at"),
+            "cache_age": _update.cache_age(Path.home() / ".agent-trail"),
+            "error": (cached or {}).get("error"),
+        }
+
+    def _update_check(self) -> dict[str, Any]:
+        """显式检查更新（绕过缓存；前端角标过期时触发，一天至多一次）。"""
+        from . import update as _update
+
+        current = _update.current_version()
+        latest = _update.latest_version(Path.home() / ".agent-trail", force=True)
+        return {
+            "current": current,
+            "latest": latest,
+            "has_update": _update.has_update(current, latest),
         }
 
     def _chat_capabilities(self) -> dict[str, Any]:
@@ -537,6 +552,9 @@ class _RequestHandler(BaseHTTPRequestHandler):
             self._json(200, self.app._status())
         elif path == "/api/resume":
             self._post_json(path, self.app._resume, 8192)
+        elif path == "/api/update/check":
+            # 无 body 的显式检查动作（绕过 24h 缓存）。
+            self._json(200, self.app._update_check())
         elif path in ("/api/chat/new", "/api/chat/cancel", "/api/chat/settings", "/api/chat/approvals/decision"):
             handlers = {
                 "/api/chat/new": self.app._chat_new,

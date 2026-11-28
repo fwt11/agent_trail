@@ -286,6 +286,10 @@ async function fetchUpdateBadge() {
   let result;
   try {
     result = await api("/api/update/status");
+    // 缓存超过一天（托盘没跑或检查失败）：自动强制刷新一次。
+    if ((result.cache_age ?? 0) > 86_400 || (!result.has_update && !result.checked_at)) {
+      result = await api("/api/update/check", { method: "POST" });
+    }
   } catch (error) {
     return;
   }

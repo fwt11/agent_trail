@@ -151,6 +151,8 @@ class ChatThread:
     acp_session_id: str | None = None
     # 通用配置选择（ACP configOptions 的 id→value，随各 agent 能力而定）
     config: dict[str, str] = field(default_factory=dict)
+    # 会话交接溯源："source:session_id"（从哪个源会话派生）
+    parent_ref: str | None = None
 
 
 @dataclass(frozen=True)

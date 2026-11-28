@@ -530,6 +530,9 @@ jobs:
           with tempfile.TemporaryDirectory() as tmp:
               _upd.write_cache(Path(tmp), "9.9.9")
               assert _upd.latest_version(Path(tmp)) == "9.9.9"  # 一天内直读缓存
+              assert 0 <= (_upd.cache_age(Path(tmp)) or 1) < 5
+              _upd.write_cache(Path(tmp), None, error="HTTPError")
+              assert _upd.read_cache(Path(tmp))["error"] == "HTTPError"  # 网络失败可诊断
           _plan = _upd.upgrade_plan()
           assert _plan is None or (_plan["kind"] in ("pip", "pipx") and _plan["cmd"])
 

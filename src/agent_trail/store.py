@@ -144,7 +144,7 @@ class LocalStore:
         )
         # ACP 通道（0.6.0）：线程级模式/模型/思考强度 + ACP 会话引用。
         # 旧库追加列，存在即跳过（SQLite 无 ADD COLUMN IF NOT EXISTS）。
-        for column in ("mode", "model", "thinking", "acp_session_id", "settings_json"):
+        for column in ("mode", "model", "thinking", "acp_session_id", "settings_json", "parent_ref"):
             try:
                 self._connection.execute(
                     f"ALTER TABLE chat_threads ADD COLUMN {column} TEXT"
@@ -423,8 +423,8 @@ class LocalStore:
         with self._lock, self._connection:
             self._connection.execute(
                 "INSERT INTO chat_threads (id, source, title, workdir, created_at, updated_at, "
-                "session_ref, mode, model, thinking, acp_session_id, settings_json) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "session_ref, mode, model, thinking, acp_session_id, settings_json, parent_ref) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     thread.id,
                     thread.source,
@@ -438,6 +438,7 @@ class LocalStore:
                     thread.thinking,
                     thread.acp_session_id,
                     json.dumps(thread.config, ensure_ascii=False) if thread.config else None,
+                    thread.parent_ref,
                 ),
             )
 
@@ -445,7 +446,7 @@ class LocalStore:
         with self._lock:
             rows = self._connection.execute(
                 "SELECT id, source, title, workdir, created_at, updated_at, session_ref, "
-                "mode, model, thinking, acp_session_id, settings_json "
+                "mode, model, thinking, acp_session_id, settings_json, parent_ref "
                 "FROM chat_threads ORDER BY updated_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
@@ -455,7 +456,7 @@ class LocalStore:
         with self._lock:
             row = self._connection.execute(
                 "SELECT id, source, title, workdir, created_at, updated_at, session_ref, "
-                "mode, model, thinking, acp_session_id, settings_json "
+                "mode, model, thinking, acp_session_id, settings_json, parent_ref "
                 "FROM chat_threads WHERE id=?",
                 (thread_id,),
             ).fetchone()
@@ -583,6 +584,7 @@ class LocalStore:
             thinking=row["thinking"],
             acp_session_id=row["acp_session_id"],
             config=json.loads(row["settings_json"]) if row["settings_json"] else {},
+            parent_ref=row["parent_ref"],
         )
 
     # ---- ACP 工具审批 ----
